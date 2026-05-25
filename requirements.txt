@@ -5,3 +5,4 @@ weasyprint==60.1
 pillow==10.4.0
 pytesseract==0.3.10
 gunicorn==20.1.0
+setuptools==65.5.0
