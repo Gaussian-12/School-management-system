@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Voice Test</title>
+    <style>
+        body {
+            font-family: Arial;
+            padding: 50px;
+            text-align: center;
+            background: #f0f0f0;
+        }
+        button {
+            padding: 20px 40px;
+            font-size: 24px;
+            background: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 10px;
+            cursor: pointer;
+            margin: 20px;
+        }
+        .result {
+            background: white;
+            padding: 20px;
+            margin: 20px;
+            border-radius: 10px;
+            font-size: 18px;
+        }
+        .status {
+            padding: 10px;
+            margin: 10px;
+            border-radius: 5px;
+        }
+        .listening {
+            background: #ff9800;
+            color: white;
+        }
+        .success {
+            background: #4CAF50;
+            color: white;
+        }
+        .error {
+            background: #f44336;
+            color: white;
+        }
+    </style>
+</head>
+<body>
+    <h1>🎤 Voice Recognition Test</h1>
+    <p>Click the button and speak a phrase like "John 85"</p>
+    
+    <button id="voiceBtn">🎙️ Start Speaking</button>
+    
+    <div id="status" class="status">Ready</div>
+    <div id="result" class="result">Waiting for voice...</div>
+
+    <script>
+        const voiceBtn = document.getElementById('voiceBtn');
+        const statusDiv = document.getElementById('status');
+        const resultDiv = document.getElementById('result');
+        
+        // Check if voice is supported
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        
+        if (!SpeechRecognition) {
+            statusDiv.innerHTML = '❌ Voice recognition NOT supported in this browser';
+            statusDiv.className = 'status error';
+            voiceBtn.disabled = true;
+        } else {
+            statusDiv.innerHTML = '✅ Voice recognition IS supported';
+            statusDiv.className = 'status success';
+            
+            const recognition = new SpeechRecognition();
+            recognition.continuous = false;
+            recognition.interimResults = true;
+            recognition.lang = 'en-US';
+            
+            voiceBtn.onclick = () => {
+                recognition.start();
+                statusDiv.innerHTML = '🎤 Listening... Speak now';
+                statusDiv.className = 'status listening';
+                resultDiv.innerHTML = '...';
+                voiceBtn.disabled = true;
+            };
+            
+            recognition.onresult = (event) => {
+                let finalText = '';
+                let interimText = '';
+                
+                for (let i = event.resultIndex; i < event.results.length; i++) {
+                    if (event.results[i].isFinal) {
+                        finalText += event.results[i][0].transcript;
+                    } else {
+                        interimText += event.results[i][0].transcript;
+                    }
+                }
+                
+                if (finalText) {
+                    resultDiv.innerHTML = `✅ You said: "${finalText}"`;
+                    statusDiv.innerHTML = '✅ Done! Click button to try again';
+                    statusDiv.className = 'status success';
+                } else if (interimText) {
+                    resultDiv.innerHTML = `🔄 Hearing: "${interimText}"`;
+                }
+            };
+            
+            recognition.onerror = (event) => {
+                statusDiv.innerHTML = `❌ Error: ${event.error}`;
+                statusDiv.className = 'status error';
+                resultDiv.innerHTML = `Error: ${event.error}. Check microphone permissions.`;
+                voiceBtn.disabled = false;
+            };
+            
+            recognition.onend = () => {
+                voiceBtn.disabled = false;
+            };
+        }
+        
+        // Check microphone permission
+        navigator.mediaDevices.getUserMedia({ audio: true })
+            .then(() => {
+                console.log('✅ Microphone permission granted');
+            })
+            .catch((err) => {
+                console.log('❌ Microphone permission denied:', err);
+                statusDiv.innerHTML = '❌ Microphone permission denied. Click the lock icon in address bar to allow.';
+                statusDiv.className = 'status error';
+            });
+    </script>
+</body>
+</html>

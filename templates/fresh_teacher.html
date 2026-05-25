@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Teacher Portal</title>
+    <style>
+        *{margin:0;padding:0;box-sizing:border-box}
+        body{font-family:Arial;background:#f5f5f5}
+        .sidebar{width:250px;background:#1e1b4b;min-height:100vh;position:fixed;padding:20px}
+        .sidebar h2{color:white;margin-bottom:30px}
+        .sidebar button{display:block;color:white;background:transparent;border:none;padding:10px;margin:5px 0;border-radius:5px;cursor:pointer;text-align:left;width:100%;font-size:16px}
+        .sidebar button:hover{background:#4f46e5}
+        .main{margin-left:250px;padding:20px}
+        .card{background:white;padding:20px;border-radius:10px;margin-bottom:20px}
+        table{width:100%;border-collapse:collapse}
+        th,td{padding:10px;text-align:left;border-bottom:1px solid #ddd}
+        .grade-input{width:70px;padding:5px}
+        .section{display:none}
+        .section.active{display:block}
+        button,select,input{padding:8px;margin:5px;border-radius:5px}
+        .btn-primary{background:#4f46e5;color:white;border:none;cursor:pointer;padding:8px 15px}
+        .att-btn{padding:5px 10px;margin:2px;cursor:pointer;background:#f0f0f0;border:1px solid #ccc;border-radius:5px}
+        .att-btn.present{background:#28a745;color:white}
+        .att-btn.absent{background:#dc3545;color:white}
+        .att-btn.late{background:#ffc107;color:black}
+        .header{background:white;padding:15px;border-radius:10px;margin-bottom:20px}
+    </style>
+</head>
+<body>
+<div class="sidebar">
+    <h2>🏫 Teacher Portal</h2>
+    <button id="btnClasses">📚 My Classes</button>
+    <button id="btnAttendance">📋 Attendance</button>
+    <button id="btnGrades">✏️ Grades</button>
+    <a href="/logout" style="display:block;color:white;padding:10px;margin-top:20px;text-decoration:none">🚪 Logout</a>
+</div>
+<div class="main">
+    <div class="header"><h2 id="pageTitle">Teacher Dashboard</h2></div>
+    
+    <div id="secClasses" class="section active">
+        <div class="card"><h3>My Classes</h3><div id="classesList">Loading...</div></div>
+    </div>
+    
+    <div id="secAttendance" class="section">
+        <div class="card">
+            <h3>Take Attendance</h3>
+            <select id="attClass"></select>
+            <input type="date" id="attDate">
+            <button class="btn-primary" id="saveAttendanceBtn">Save Attendance</button>
+            <div id="attendanceList"></div>
+        </div>
+    </div>
+    
+    <div id="secGrades" class="section">
+        <div class="card">
+            <h3>Enter Grades</h3>
+            <select id="gradeClass"></select>
+            <select id="gradeSubject"></select>
+            <select id="gradeTerm">
+                <option>Mid Term 1</option>
+                <option selected>End of Term 1</option>
+                <option>Mid Term 2</option>
+                <option>End of Term 2</option>
+            </select>
+            <button class="btn-primary" id="saveGradesBtn">Save Grades</button>
+            <div id="gradesList"></div>
+        </div>
+    </div>
+</div>
+
+<script>
+// No inline onclick attributes - all event listeners set up here
+let myClasses = [];
+let gradeData = {};
+let attData = {};
+
+// Set up event listeners when page loads
+document.getElementById('btnClasses').addEventListener('click', function() { showSection('Classes'); });
+document.getElementById('btnAttendance').addEventListener('click', function() { showSection('Attendance'); });
+document.getElementById('btnGrades').addEventListener('click', function() { showSection('Grades'); });
+document.getElementById('saveAttendanceBtn').addEventListener('click', saveAttendance);
+document.getElementById('saveGradesBtn').addEventListener('click', saveGrades);
+
+function showSection(section) {
+    document.getElementById('secClasses').classList.remove('active');
+    document.getElementById('secAttendance').classList.remove('active');
+    document.getElementById('secGrades').classList.remove('active');
+    
+    if (section === 'Classes') {
+        document.getElementById('secClasses').classList.add('active');
+        document.getElementById('pageTitle').innerText = 'My Classes';
+        loadClasses();
+    } else if (section === 'Attendance') {
+        document.getElementById('secAttendance').classList.add('active');
+        document.getElementById('pageTitle').innerText = 'Attendance Register';
+        loadAttendance();
+    } else if (section === 'Grades') {
+        document.getElementById('secGrades').classList.add('active');
+        document.getElementById('pageTitle').innerText = 'Enter Grades';
+        loadGradeStudents();
+    }
+}
+
+async function loadClasses() {
+    try {
+        const res = await fetch('/api/teacher/classes');
+        myClasses = await res.json();
+        if (!myClasses.length) {
+            document.getElementById('classesList').innerHTML = '<p>No classes assigned. Contact admin.</p>';
+            return;
+        }
+        let html = '';
+        for (let c of myClasses) {
+            html += '<div style="border:1px solid #ddd;padding:10px;margin:10px 0;border-radius:5px">';
+            html += '<strong>' + c.class.name + '</strong><br>';
+            html += 'Subject: ' + c.class.subject_name + '<br>';
+            html += 'Students: ' + c.students.length + '</div>';
+        }
+        document.getElementById('classesList').innerHTML = html;
+        
+        let opts = '<option value="">Select Class</option>';
+        for (let c of myClasses) {
+            opts += '<option value="' + c.class.id + '">' + c.class.name + ' - ' + c.class.subject_name + '</option>';
+        }
+        document.getElementById('attClass').innerHTML = opts;
+        document.getElementById('gradeClass').innerHTML = opts;
+        
+        document.getElementById('gradeClass').addEventListener('change', loadGradeStudents);
+        document.getElementById('attClass').addEventListener('change', loadAttendance);
+    } catch(e) {
+        console.error(e);
+        document.getElementById('classesList').innerHTML = '<p>Error loading classes</p>';
+    }
+}
+
+async function loadAttendance() {
+    const cid = document.getElementById('attClass').value;
+    const date = document.getElementById('attDate').value || new Date().toISOString().split('T')[0];
+    if (!cid) return;
+    
+    const cls = myClasses.find(c => c.class.id == cid);
+    if (!cls) return;
+    
+    try {
+        const existing = await fetch('/api/teacher/attendance/' + cid + '?date=' + date).then(r => r.json());
+        attData = {};
+        existing.forEach(r => attData[r.student_id] = r.status);
+        
+        let html = '<table><thead><tr><th>Student</th><th>Present</th><th>Absent</th><th>Late</th></tr></thead><tbody>';
+        for (let s of cls.students) {
+            html += '<tr>';
+            html += '<td>' + s.name + '</td>';
+            html += '<td><button class="att-btn' + (attData[s.id] === 'present' ? ' present' : '') + '" data-id="' + s.id + '" data-status="present">Present</button></td>';
+            html += '<td><button class="att-btn' + (attData[s.id] === 'absent' ? ' absent' : '') + '" data-id="' + s.id + '" data-status="absent">Absent</button></td>';
+            html += '<td><button class="att-btn' + (attData[s.id] === 'late' ? ' late' : '') + '" data-id="' + s.id + '" data-status="late">Late</button></td>';
+            html += '</tr>';
+        }
+        html += '</tbody></table>';
+        document.getElementById('attendanceList').innerHTML = html;
+        
+        // Add event listeners to all attendance buttons
+        document.querySelectorAll('.att-btn').forEach(btn => {
+            btn.addEventListener('click', function() {
+                let id = parseInt(this.getAttribute('data-id'));
+                let status = this.getAttribute('data-status');
+                attData[id] = status;
+                loadAttendance();
+            });
+        });
+    } catch(e) {
+        console.error(e);
+    }
+}
+
+async function saveAttendance() {
+    const cid = document.getElementById('attClass').value;
+    const date = document.getElementById('attDate').value;
+    if (!cid) { alert('Please select a class'); return; }
+    
+    const records = [];
+    for (let id in attData) {
+        records.push({student_id: parseInt(id), status: attData[id]});
+    }
+    if (records.length === 0) { alert('No attendance records'); return; }
+    
+    try {
+        const res = await fetch('/api/teacher/attendance', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({class_id: cid, date: date, records: records})
+        });
+        const data = await res.json();
+        alert(data.success ? 'Attendance saved!' : 'Error saving attendance');
+    } catch(e) {
+        alert('Error: ' + e.message);
+    }
+}
+
+async function loadGradeStudents() {
+    const cid = document.getElementById('gradeClass').value;
+    if (!cid) return;
+    
+    const cls = myClasses.find(c => c.class.id == cid);
+    if (!cls) return;
+    
+    const subs = [];
+    for (let c of myClasses) {
+        if (c.class.id == cid) {
+            subs.push({id: c.class.subject_id, name: c.class.subject_name});
+        }
+    }
+    let subHtml = '';
+    for (let s of subs) {
+        subHtml += '<option value="' + s.id + '">' + s.name + '</option>';
+    }
+    document.getElementById('gradeSubject').innerHTML = subHtml;
+    
+    const sid = document.getElementById('gradeSubject').value;
+    const term = document.getElementById('gradeTerm').value;
+    if (!sid) return;
+    
+    try {
+        const existing = await fetch('/api/teacher/grades/' + cid + '/' + sid + '?term=' + term).then(r => r.json());
+        gradeData = {};
+        existing.forEach(g => gradeData[g.student_id] = g.grade_value);
+        
+        let html = '<tr><thead><tr><th>Student</th><th>Score (0-100)</th><th>Grade</th></tr></thead><tbody>';
+        for (let s of cls.students) {
+            let score = gradeData[s.id] || '';
+            let grade = '';
+            if (score) {
+                if (score >= 80) grade = 'A';
+                else if (score >= 65) grade = 'B';
+                else if (score >= 50) grade = 'C';
+                else if (score >= 40) grade = 'D';
+                else grade = 'F';
+            }
+            html += '<tr>';
+            html += '<td>' + s.name + '</tr>';
+            html += '<td><input type="number" class="grade-input" id="grade_' + s.id + '" value="' + score + '"></td>';
+            html += '<td><span id="letter_' + s.id + '">' + grade + '</span></td>';
+            html += '</tr>';
+        }
+        html += '</tbody></table>';
+        document.getElementById('gradesList').innerHTML = html;
+        
+        // Add event listeners to grade inputs
+        for (let s of cls.students) {
+            let input = document.getElementById('grade_' + s.id);
+            if (input) {
+                input.addEventListener('change', function() {
+                    let val = parseInt(this.value);
+                    let id = s.id;
+                    gradeData[id] = isNaN(val) ? null : val;
+                    let grade = '';
+                    if (!isNaN(val)) {
+                        if (val >= 80) grade = 'A';
+                        else if (val >= 65) grade = 'B';
+                        else if (val >= 50) grade = 'C';
+                        else if (val >= 40) grade = 'D';
+                        else grade = 'F';
+                    }
+                    document.getElementById('letter_' + id).innerHTML = grade;
+                });
+            }
+        }
+    } catch(e) {
+        console.error(e);
+    }
+}
+
+async function saveGrades() {
+    const cid = document.getElementById('gradeClass').value;
+    const sid = document.getElementById('gradeSubject').value;
+    const term = document.getElementById('gradeTerm').value;
+    if (!cid || !sid) { alert('Please select class and subject'); return; }
+    
+    const grades = [];
+    for (let id in gradeData) {
+        if (gradeData[id] != null && !isNaN(gradeData[id])) {
+            grades.push({
+                student_id: parseInt(id),
+                subject_id: parseInt(sid),
+                class_id: parseInt(cid),
+                grade_value: gradeData[id],
+                term: term,
+                academic_year: '2025',
+                method: 'manual'
+            });
+        }
+    }
+    if (grades.length === 0) { alert('No grades to save'); return; }
+    
+    try {
+        const res = await fetch('/api/teacher/save-grade', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({grades: grades})
+        });
+        const data = await res.json();
+        alert(data.success ? data.saved + ' grades saved!' : 'Error saving grades');
+    } catch(e) {
+        alert('Error: ' + e.message);
+    }
+}
+
+// Initialize
+document.getElementById('attDate').valueAsDate = new Date();
+loadClasses();
+</script>
+</body>
+</html>

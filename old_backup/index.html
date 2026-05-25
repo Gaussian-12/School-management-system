@@ -1,0 +1,529 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Voice Grading System</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 20px;
+            padding: 30px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+        }
+        
+        h1 {
+            text-align: center;
+            color: #333;
+            margin-bottom: 10px;
+        }
+        
+        .subtitle {
+            text-align: center;
+            color: #666;
+            margin-bottom: 30px;
+        }
+        
+        .voice-card {
+            background: linear-gradient(135deg, #667eea15 0%, #764ba215 100%);
+            border: 2px solid #667eea;
+            border-radius: 15px;
+            padding: 25px;
+            margin-bottom: 30px;
+            text-align: center;
+        }
+        
+        .voice-btn {
+            background: #667eea;
+            color: white;
+            border: none;
+            padding: 20px 50px;
+            font-size: 24px;
+            border-radius: 50px;
+            cursor: pointer;
+            margin: 15px 0;
+            transition: all 0.3s;
+            font-weight: bold;
+        }
+        
+        .voice-btn:hover {
+            background: #5a67d8;
+            transform: scale(1.05);
+        }
+        
+        .voice-btn:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        
+        .status {
+            padding: 15px;
+            margin: 15px 0;
+            border-radius: 10px;
+            font-size: 16px;
+        }
+        
+        .status-listening {
+            background: #fff3cd;
+            color: #856404;
+            border: 1px solid #ffc107;
+        }
+        
+        .status-success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #28a745;
+        }
+        
+        .status-error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #dc3545;
+        }
+        
+        .section {
+            background: #f8f9fa;
+            border-radius: 15px;
+            padding: 20px;
+            margin-bottom: 30px;
+        }
+        
+        .section h2 {
+            margin-bottom: 20px;
+            color: #333;
+        }
+        
+        .controls {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+        
+        select, button {
+            padding: 10px 15px;
+            font-size: 14px;
+            border-radius: 8px;
+            border: 1px solid #ddd;
+        }
+        
+        .btn-save {
+            background: #28a745;
+            color: white;
+            border: none;
+            cursor: pointer;
+        }
+        
+        .btn-refresh {
+            background: #17a2b8;
+            color: white;
+            border: none;
+            cursor: pointer;
+        }
+        
+        .btn-report {
+            background: #ffc107;
+            color: #333;
+            border: none;
+            cursor: pointer;
+        }
+        
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        
+        th, td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #ddd;
+        }
+        
+        th {
+            background: #667eea;
+            color: white;
+        }
+        
+        tr:hover {
+            background: #f1f1f1;
+        }
+        
+        .grade-input {
+            width: 80px;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            text-align: center;
+        }
+        
+        .saved-badge {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 5px;
+            font-size: 12px;
+            font-weight: bold;
+        }
+        
+        .badge-saved {
+            background: #d4edda;
+            color: #155724;
+        }
+        
+        .badge-pending {
+            background: #fff3cd;
+            color: #856404;
+        }
+        
+        .voice-hint {
+            color: #666;
+            font-size: 14px;
+            margin-top: 10px;
+        }
+        
+        @media (max-width: 768px) {
+            .container {
+                padding: 15px;
+            }
+            .voice-btn {
+                padding: 15px 30px;
+                font-size: 18px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎤 Voice Grading System</h1>
+        <div class="subtitle">Enter grades by speaking - Works on Chromebook!</div>
+        
+        <!-- Voice Input Card -->
+        <div class="voice-card">
+            <h2>🎙️ Voice Grade Entry</h2>
+            <button id="voiceBtn" class="voice-btn">Click and Speak</button>
+            <div id="voiceStatus" class="status"></div>
+            <div class="voice-hint">
+                💡 Try saying: <strong>"John 85, Sarah 92, Maria 78"</strong><br>
+                Or: <strong>"Everyone gets 75"</strong> or <strong>"Change John to 88"</strong>
+            </div>
+        </div>
+        
+        <!-- Grade Entry Table -->
+        <div class="section">
+            <h2>📝 Grade Table</h2>
+            <div class="controls">
+                <select id="subjectSelect">
+                    <option value="Mathematics">Mathematics</option>
+                    <option value="Science">Science</option>
+                    <option value="English">English</option>
+                    <option value="History">History</option>
+                    <option value="Geography">Geography</option>
+                </select>
+                <button id="saveBtn" class="btn-save">💾 Save All Grades</button>
+                <button id="refreshBtn" class="btn-refresh">🔄 Refresh</button>
+            </div>
+            <div style="overflow-x: auto;">
+                <table id="gradesTable">
+                    <thead>
+                        <tr><th>Student Name</th><th>Grade (0-100)</th><th>Status</th></tr>
+                    </thead>
+                    <tbody id="gradesTableBody">
+                        <tr><td colspan="3">Loading students...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        
+        <!-- Report Card -->
+        <div class="section">
+            <h2>📄 Report Card</h2>
+            <select id="reportStudentSelect" style="width: 200px; margin-right: 10px;">
+                <option value="">Select Student</option>
+            </select>
+            <button id="reportBtn" class="btn-report">Download PDF Report</button>
+        </div>
+    </div>
+    
+    <script>
+        // Global variables
+        let students = [];
+        let currentSubject = 'Mathematics';
+        let pendingGrades = {};
+        
+        // DOM elements
+        const voiceBtn = document.getElementById('voiceBtn');
+        const voiceStatus = document.getElementById('voiceStatus');
+        const subjectSelect = document.getElementById('subjectSelect');
+        const saveBtn = document.getElementById('saveBtn');
+        const refreshBtn = document.getElementById('refreshBtn');
+        const reportBtn = document.getElementById('reportBtn');
+        const reportStudentSelect = document.getElementById('reportStudentSelect');
+        const gradesTableBody = document.getElementById('gradesTableBody');
+        
+        // Load students from server
+        async function loadStudents() {
+            try {
+                const response = await fetch('/api/students');
+                students = await response.json();
+                
+                // Populate report dropdown
+                reportStudentSelect.innerHTML = '<option value="">Select Student</option>';
+                students.forEach(student => {
+                    const option = document.createElement('option');
+                    option.value = student.id;
+                    option.textContent = student.name;
+                    reportStudentSelect.appendChild(option);
+                });
+                
+                // Load grades
+                await loadGrades();
+            } catch (error) {
+                console.error('Error loading students:', error);
+                gradesTableBody.innerHTML = '<tr><td colspan="3">Error loading students</td></tr>';
+            }
+        }
+        
+        // Load grades for current subject
+        async function loadGrades() {
+            try {
+                const response = await fetch(`/api/grades/${currentSubject}`);
+                const grades = await response.json();
+                
+                gradesTableBody.innerHTML = '';
+                grades.forEach(item => {
+                    const row = gradesTableBody.insertRow();
+                    
+                    // Student name
+                    row.insertCell(0).textContent = item.name;
+                    
+                    // Grade input
+                    const gradeCell = row.insertCell(1);
+                    const input = document.createElement('input');
+                    input.type = 'number';
+                    input.min = 0;
+                    input.max = 100;
+                    input.className = 'grade-input';
+                    input.value = item.grade;
+                    input.dataset.studentId = item.id;
+                    input.dataset.studentName = item.name;
+                    input.addEventListener('change', function() {
+                        markPending(item.id, this.value);
+                    });
+                    gradeCell.appendChild(input);
+                    
+                    // Status
+                    const statusCell = row.insertCell(2);
+                    const badge = document.createElement('span');
+                    badge.className = 'saved-badge';
+                    if (item.grade !== '') {
+                        badge.className += ' badge-saved';
+                        badge.textContent = 'Saved';
+                    } else {
+                        badge.className += ' badge-pending';
+                        badge.textContent = 'No grade';
+                    }
+                    statusCell.appendChild(badge);
+                });
+            } catch (error) {
+                console.error('Error loading grades:', error);
+            }
+        }
+        
+        // Mark grade as pending save
+        function markPending(studentId, gradeValue) {
+            if (!pendingGrades[studentId]) {
+                pendingGrades[studentId] = {};
+            }
+            pendingGrades[studentId][currentSubject] = gradeValue;
+            
+            // Update badge
+            const rows = gradesTableBody.querySelectorAll('tr');
+            for (let row of rows) {
+                const input = row.cells[1].querySelector('input');
+                if (input && parseInt(input.dataset.studentId) === studentId) {
+                    const badge = row.cells[2].querySelector('span');
+                    badge.className = 'saved-badge badge-pending';
+                    badge.textContent = 'Pending';
+                    break;
+                }
+            }
+        }
+        
+        // Save all pending grades
+        async function saveAllGrades() {
+            let savedCount = 0;
+            
+            for (const studentId in pendingGrades) {
+                const gradeValue = pendingGrades[studentId][currentSubject];
+                if (gradeValue !== undefined && gradeValue !== '') {
+                    try {
+                        const response = await fetch('/api/save', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                student_id: parseInt(studentId),
+                                subject: currentSubject,
+                                grade_value: parseInt(gradeValue)
+                            })
+                        });
+                        
+                        if (response.ok) {
+                            savedCount++;
+                            // Update badge to saved
+                            const rows = gradesTableBody.querySelectorAll('tr');
+                            for (let row of rows) {
+                                const input = row.cells[1].querySelector('input');
+                                if (input && parseInt(input.dataset.studentId) === parseInt(studentId)) {
+                                    const badge = row.cells[2].querySelector('span');
+                                    badge.className = 'saved-badge badge-saved';
+                                    badge.textContent = 'Saved';
+                                    break;
+                                }
+                            }
+                        }
+                    } catch (error) {
+                        console.error('Error saving:', error);
+                    }
+                }
+            }
+            
+            pendingGrades = {};
+            voiceStatus.innerHTML = `✅ Saved ${savedCount} grades successfully!`;
+            voiceStatus.className = 'status status-success';
+            setTimeout(() => {
+                if (voiceStatus.innerHTML.includes('Saved')) {
+                    voiceStatus.innerHTML = '';
+                    voiceStatus.className = 'status';
+                }
+            }, 3000);
+        }
+        
+        // Voice recognition setup - IMPROVED VERSION
+function setupVoice() {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    
+    if (!SpeechRecognition) {
+        voiceStatus.innerHTML = '❌ Voice not supported';
+        voiceStatus.className = 'status status-error';
+        voiceBtn.disabled = true;
+        return;
+    }
+    
+    const recognition = new SpeechRecognition();
+    recognition.continuous = false;
+    recognition.interimResults = true;  // ← SHOW what Chrome hears in real-time
+    recognition.lang = 'en-US';
+    
+    voiceBtn.onclick = () => {
+        recognition.start();
+        voiceStatus.innerHTML = '🎤 Listening... Speak now';
+        voiceStatus.className = 'status status-listening';
+        voiceBtn.disabled = true;
+        voiceBtn.textContent = '🔴 Listening...';
+    };
+    
+    recognition.onresult = (event) => {
+        let interimTranscript = '';
+        let finalTranscript = '';
+        
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+            const transcript = event.results[i][0].transcript;
+            if (event.results[i].isFinal) {
+                finalTranscript += transcript;
+            } else {
+                interimTranscript += transcript;
+            }
+        }
+        
+        // Show what Chrome is hearing in real-time
+        if (interimTranscript) {
+            voiceStatus.innerHTML = `🎤 Hearing: "${interimTranscript}" (keep speaking)`;
+        }
+        
+        if (finalTranscript) {
+            const text = finalTranscript.toLowerCase();
+            voiceStatus.innerHTML = `📝 Processing: "${finalTranscript}"`;
+            
+            // Try multiple parsing strategies
+            let found = false;
+            
+            // Strategy 1: Look for "name grade" pattern
+            const words = text.split(/[\s,]+/);
+            for (let i = 0; i < words.length - 1; i++) {
+                const possibleName = words[i];
+                const possibleGrade = parseInt(words[i + 1]);
+                
+                if (!isNaN(possibleGrade) && possibleGrade >= 0 && possibleGrade <= 100 && possibleName.length > 1) {
+                    const rows = gradesTableBody.querySelectorAll('tr');
+                    for (let row of rows) {
+                        const studentName = row.cells[0].textContent.toLowerCase();
+                        if (studentName.includes(possibleName) || possibleName.includes(studentName.split(' ')[0])) {
+                            const input = row.cells[1].querySelector('input');
+                            if (input) {
+                                input.value = possibleGrade;
+                                const studentId = parseInt(input.dataset.studentId);
+                                markPending(studentId, possibleGrade);
+                                found = true;
+                                voiceStatus.innerHTML = `✅ Set ${row.cells[0].textContent} to ${possibleGrade}`;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            
+            if (!found) {
+                voiceStatus.innerHTML = `❌ Didn't understand "${finalTranscript}". Try saying "John 85" clearly.`;
+                voiceStatus.className = 'status status-error';
+                setTimeout(() => {
+                    if (voiceStatus.innerHTML.includes("Didn't understand")) {
+                        voiceStatus.innerHTML = '';
+                        voiceStatus.className = 'status';
+                    }
+                }, 3000);
+            } else {
+                voiceStatus.className = 'status status-success';
+                setTimeout(() => {
+                    if (voiceStatus.innerHTML.includes("Set")) {
+                        voiceStatus.innerHTML = '✅ Ready for next command';
+                    }
+                }, 2000);
+            }
+            
+            voiceBtn.disabled = false;
+            voiceBtn.textContent = '🎤 Click and Speak';
+        }
+    };
+    
+    recognition.onerror = (event) => {
+        voiceStatus.innerHTML = `❌ Error: ${event.error}. Try again.`;
+        voiceStatus.className = 'status status-error';
+        voiceBtn.disabled = false;
+        voiceBtn.textContent = '🎤 Click and Speak';
+    };
+    
+    recognition.onend = () => {
+        voiceBtn.disabled = false;
+        voiceBtn.textContent = '🎤 Click and Speak';
+    };
+}
+        
+        // Initialize
+        setupVoice();
+        loadStudents();
+    </script>
+</body>
+</html>
