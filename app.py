@@ -688,14 +688,47 @@ def admin_grades():
     cid  = request.args.get('class_id')
     term = request.args.get('term','End of Term 1')
     conn = get_db()
-    rows = q(conn,"""SELECT g.score,g.max_score,g.method,
-                     s.full_name as student_name,sub.name as subject_name
+    rows = q(conn,"""SELECT g.score,g.max_score,g.method,g.class_id,
+                     s.id as student_id, s.full_name as student_name,
+                     sub.id as subject_id, sub.name as subject_name,
+                     c.name as class_name
                      FROM grades g
                      JOIN students s ON g.student_id=s.id
                      JOIN subjects sub ON g.subject_id=sub.id
-                     WHERE g.term=?""" + (" AND g.class_id=?" if cid else ""),
+                     JOIN classes c ON g.class_id=c.id
+                     WHERE g.term=?""" + (" AND g.class_id=?" if cid else "") +
+                     " ORDER BY c.name, s.full_name, sub.name",
               [term] + ([cid] if cid else [])).fetchall()
-    conn.close(); return jsonify([dict(r) for r in rows])
+    from collections import OrderedDict
+    classes = OrderedDict()
+    for r in rows:
+        cn = r['class_name']
+        if cn not in classes:
+            classes[cn] = {'subjects': [], 'students': OrderedDict()}
+        if r['subject_name'] not in classes[cn]['subjects']:
+            classes[cn]['subjects'].append(r['subject_name'])
+        sn = r['student_name']
+        if sn not in classes[cn]['students']:
+            classes[cn]['students'][sn] = {'student_id': r['student_id']}
+        classes[cn]['students'][sn][r['subject_name']] = {
+            'score': r['score'], 'max': r['max_score'] or 100, 'method': r['method']
+        }
+    result = []
+    for cn, cd in classes.items():
+        students_out = []
+        for sname, sdata in cd['students'].items():
+            row = {'student_name': sname, 'student_id': sdata['student_id'], 'subjects': {}}
+            scores = []
+            for sub in cd['subjects']:
+                sg = sdata.get(sub)
+                row['subjects'][sub] = sg
+                if sg and sg['score'] is not None:
+                    scores.append((sg['score'] / sg['max']) * 100)
+            row['average'] = round(sum(scores)/len(scores), 1) if scores else None
+            students_out.append(row)
+        result.append({'class_name': cn, 'subjects': cd['subjects'], 'students': students_out})
+    conn.close()
+    return jsonify(result)
 
 # ── REPORTS ────────────────────────────────────────────────────────────────────
 @app.route('/api/admin/reports/generate', methods=['POST'])
@@ -703,95 +736,205 @@ def admin_grades():
 @admin_required
 def admin_generate_reports():
     d = request.json or {}
-    class_id   = d.get('class_id')
-    term       = d.get('term','End of Term 1')
-    acad_year  = d.get('academic_year','2025')
-    do_email   = d.get('send_email', False)
-    do_whatsapp= d.get('send_whatsapp', False)
+    class_id    = d.get('class_id')
+    term        = d.get('term','End of Term 1')
+    acad_year   = str(d.get('academic_year','2025'))
+    do_email    = d.get('send_email', False)
+    do_whatsapp = d.get('send_whatsapp', False)
 
     conn = get_db()
-    sql  = """SELECT s.*,c.name as class_name FROM students s
-              LEFT JOIN classes c ON s.class_id=c.id
-              WHERE s.active=1"""
+    sql = """SELECT s.*,c.name as class_name FROM students s
+             LEFT JOIN classes c ON s.class_id=c.id WHERE s.active=1"""
     params = []
     if class_id:
         sql += " AND s.class_id=?"; params.append(class_id)
+    sql += " ORDER BY c.name, s.full_name"
     students = q(conn, sql, params).fetchall()
 
     os.makedirs('reports', exist_ok=True)
     results = []
 
     for stu in students:
+        # Try with academic_year filter first; fall back without it so old data still works
         grades = q(conn,"""SELECT g.*,sub.name as subject_name
                            FROM grades g JOIN subjects sub ON g.subject_id=sub.id
                            WHERE g.student_id=? AND g.term=? AND g.academic_year=?
                            ORDER BY sub.name""",
                    (stu['id'], term, acad_year)).fetchall()
+        if not grades:
+            grades = q(conn,"""SELECT g.*,sub.name as subject_name
+                               FROM grades g JOIN subjects sub ON g.subject_id=sub.id
+                               WHERE g.student_id=? AND g.term=?
+                               ORDER BY sub.name""",
+                       (stu['id'], term)).fetchall()
 
         if not grades:
-            results.append({'name':stu['full_name'],'status':'skipped','reason':'No grades entered'})
+            results.append({'name':stu['full_name'],'class':stu['class_name']or'—',
+                            'status':'skipped','reason':'No grades entered'})
             continue
 
         grades_data = [dict(g) for g in grades]
-        avg = sum(g['score'] or 0 for g in grades_data) / len(grades_data)
+        scores_pct  = [(g['score'] or 0)/(g.get('max_score') or 100)*100 for g in grades_data]
+        avg         = sum(scores_pct)/len(scores_pct)
         ltr, rmk, _ = grade_letter(avg)
 
         pdf_bytes = build_report_pdf(dict(stu), grades_data,
                                      stu['class_name'] or '—', term, acad_year)
         pdf_name  = f"report_{stu['id']}_{term.replace(' ','_')}_{acad_year}.pdf"
         pdf_path  = f"reports/{pdf_name}"
-        with open(pdf_path,'wb') as f: f.write(pdf_bytes)
+        with open(pdf_path,'wb') as fp: fp.write(pdf_bytes)
 
-        row = {'id':stu['id'],'name':stu['full_name'],'class':stu['class_name'],
+        row = {'id':stu['id'],'name':stu['full_name'],'class':stu['class_name'] or '—',
                'avg':round(avg,1),'grade':ltr,'remark':rmk,
-               'email_status':'—','wa_status':'—'}
+               'subjects':len(grades_data),'pdf':pdf_name,
+               'email_status':'—','wa_status':'—',
+               'has_email': bool(stu['parent_email']),
+               'has_phone': bool(stu['parent_whatsapp'] or stu['parent_phone'])}
 
-        if do_email and stu['parent_email']:
-            email_body = f"""<html><body style="font-family:Arial;color:#1a1a2e;padding:20px">
-            <h2 style="color:#4f46e5">📋 {term} Report Card</h2>
-            <p>Dear <strong>{stu['parent_name'] or 'Parent/Guardian'}</strong>,</p>
-            <p>Please find attached the {term} academic report card for
-            <strong>{stu['full_name']}</strong>.</p>
-            <table style="background:#f5f3ff;padding:14px;border-radius:8px;border-left:4px solid #4f46e5">
-              <tr><td><strong>Student:</strong></td><td>{stu['full_name']}</td></tr>
-              <tr><td><strong>Class:</strong></td><td>{stu['class_name']}</td></tr>
-              <tr><td><strong>Average:</strong></td><td>{avg:.1f}%</td></tr>
-              <tr><td><strong>Grade:</strong></td><td>{ltr} — {rmk}</td></tr>
-            </table>
-            <p style="margin-top:14px">If you have any questions, please contact the school office.</p>
-            <p>Kind regards,<br><strong>{SCHOOL_NAME}</strong></p>
-            </body></html>"""
-            ok, msg = send_email(stu['parent_email'],
-                f"📋 {term} Report Card – {stu['full_name']}", email_body,
-                attachments=[(f"Report_{stu['full_name'].replace(' ','_')}.pdf", pdf_bytes)])
-            row['email_status'] = '✅ Sent' if ok else f'❌ {msg[:60]}'
-            q(conn,"""INSERT INTO report_deliveries(student_id,term,academic_year,channel,recipient,status,error_msg)
-                      VALUES(?,?,?,'email',?,?,?)""",
-              (stu['id'],term,acad_year,stu['parent_email'],
-               'sent' if ok else 'failed', None if ok else msg[:200]))
+        if do_email:
+            if stu['parent_email']:
+                email_body = f"""<html><body style="font-family:Arial,sans-serif;background:#f8f7ff;margin:0;padding:0">
+<div style="max-width:600px;margin:0 auto;background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 2px 12px rgba(0,0,0,.08)">
+  <div style="background:linear-gradient(135deg,#4f46e5,#7c3aed);padding:28px 32px;text-align:center">
+    <div style="font-size:36px">🏫</div>
+    <h1 style="color:#fff;margin:8px 0 4px;font-size:20px">{SCHOOL_NAME}</h1>
+    <p style="color:rgba(255,255,255,.8);margin:0;font-size:13px">Academic Report Card</p>
+  </div>
+  <div style="padding:28px 32px">
+    <p style="font-size:15px;color:#374151">Dear <strong>{stu['parent_name'] or 'Parent/Guardian'}</strong>,</p>
+    <p style="color:#6b7280;font-size:14px">We are pleased to share the <strong>{term}</strong> academic report for your child.</p>
+    <div style="background:#f5f3ff;border-left:4px solid #4f46e5;border-radius:8px;padding:16px 20px;margin:20px 0">
+      <table style="width:100%;border-collapse:collapse;font-size:14px">
+        <tr><td style="padding:5px 0;color:#6b7280;width:140px">Student</td><td style="font-weight:700;color:#111">{stu['full_name']}</td></tr>
+        <tr><td style="padding:5px 0;color:#6b7280">Class</td><td style="font-weight:700;color:#111">{stu['class_name'] or '—'}</td></tr>
+        <tr><td style="padding:5px 0;color:#6b7280">Term</td><td style="font-weight:700;color:#111">{term} — {acad_year}</td></tr>
+        <tr><td style="padding:5px 0;color:#6b7280">Overall Average</td><td style="font-weight:700;color:#4f46e5;font-size:16px">{avg:.1f}%</td></tr>
+        <tr><td style="padding:5px 0;color:#6b7280">Grade</td><td><span style="background:#4f46e5;color:#fff;padding:2px 12px;border-radius:10px;font-weight:700">{ltr} — {rmk}</span></td></tr>
+      </table>
+    </div>
+    <p style="color:#6b7280;font-size:13px">The full PDF report card is attached to this email. Please review it carefully and sign the parent/guardian section.</p>
+    <p style="color:#6b7280;font-size:13px">For any queries, please contact the school office.</p>
+    <p style="color:#374151;font-size:14px;margin-top:20px">Kind regards,<br><strong>{SCHOOL_NAME}</strong></p>
+  </div>
+  <div style="background:#f9f9f9;padding:14px 32px;text-align:center;font-size:11px;color:#9ca3af;border-top:1px solid #f0f0f0">
+    This report was generated by {SCHOOL_NAME} School Management System
+  </div>
+</div>
+</body></html>"""
+                ok, msg = send_email(
+                    stu['parent_email'],
+                    f"📋 {term} Report Card — {stu['full_name']} | {SCHOOL_NAME}",
+                    email_body,
+                    attachments=[(f"Report_{stu['full_name'].replace(' ','_')}_{term.replace(' ','_')}.pdf", pdf_bytes)]
+                )
+                row['email_status'] = '✅ Sent' if ok else f'❌ {msg[:80]}'
+                q(conn,"""INSERT INTO report_deliveries(student_id,term,academic_year,channel,recipient,status,error_msg)
+                          VALUES(?,?,?,'email',?,?,?)""",
+                  (stu['id'],term,acad_year,stu['parent_email'],
+                   'sent' if ok else 'failed', None if ok else msg[:200]))
+            else:
+                row['email_status'] = '⚠️ No email'
 
-        if do_whatsapp and (stu['parent_whatsapp'] or stu['parent_phone']):
+        if do_whatsapp:
             num = stu['parent_whatsapp'] or stu['parent_phone']
-            wa_body = (f"📋 *{term} Report Card – {SCHOOL_NAME}*\n\n"
-                       f"Dear {stu['parent_name'] or 'Parent/Guardian'},\n\n"
-                       f"*Student:* {stu['full_name']}\n"
-                       f"*Class:* {stu['class_name']}\n"
-                       f"*Average:* {avg:.1f}%\n"
-                       f"*Grade:* {ltr} — {rmk}\n\n"
-                       f"The full PDF report has been emailed to you.\n"
-                       f"Contact the school for any questions. 🏫")
-            ok, msg = send_whatsapp(num, wa_body)
-            row['wa_status'] = '✅ Sent' if ok else f'❌ {msg[:60]}'
-            q(conn,"""INSERT INTO report_deliveries(student_id,term,academic_year,channel,recipient,status,error_msg)
-                      VALUES(?,?,?,'whatsapp',?,?,?)""",
-              (stu['id'],term,acad_year,num,
-               'sent' if ok else 'failed', None if ok else msg[:200]))
+            if num:
+                wa_lines = [
+                    f"📋 *{term} Report Card — {SCHOOL_NAME}*",
+                    "",
+                    f"Dear {stu['parent_name'] or 'Parent/Guardian'},",
+                    "",
+                    f"Here is the academic summary for *{stu['full_name']}*:",
+                    "",
+                    f"  🏛️ Class: {stu['class_name'] or '—'}",
+                    f"  📅 Term: {term} ({acad_year})",
+                    f"  📈 Average: *{avg:.1f}%*",
+                    f"  🏅 Grade: *{ltr} — {rmk}*",
+                    f"  📚 Subjects: {len(grades_data)}",
+                    "",
+                    "The full PDF report card has been sent via email." if stu['parent_email'] else "Please visit the school to collect the printed report card.",
+                    "",
+                    "For enquiries contact the school office. 🏫"
+                ]
+                wa_body = "\n".join(wa_lines)
+                ok, msg = send_whatsapp(num, wa_body)
+                row['wa_status'] = '✅ Sent' if ok else f'❌ {msg[:80]}'
+                q(conn,"""INSERT INTO report_deliveries(student_id,term,academic_year,channel,recipient,status,error_msg)
+                          VALUES(?,?,?,'whatsapp',?,?,?)""",
+                  (stu['id'],term,acad_year,num,
+                   'sent' if ok else 'failed', None if ok else msg[:200]))
+            else:
+                row['wa_status'] = '⚠️ No number'
 
         conn.commit()
         results.append(row)
 
     conn.close()
-    return jsonify({'ok':True,'results':results,'total':len(results)})
+    generated = [r for r in results if r.get('grade')]
+    return jsonify({'ok':True,'results':results,'total':len(results),
+                    'generated':len(generated),'skipped':len(results)-len(generated)})
+
+
+@app.route('/api/admin/reports/resend', methods=['POST'])
+@login_required
+@admin_required
+def admin_resend_report():
+    """Resend report for a single student."""
+    d = request.json or {}
+    sid         = d.get('student_id')
+    term        = d.get('term','End of Term 1')
+    acad_year   = str(d.get('academic_year','2025'))
+    do_email    = d.get('send_email', False)
+    do_whatsapp = d.get('send_whatsapp', False)
+
+    conn = get_db()
+    stu = q(conn,"""SELECT s.*,c.name as class_name FROM students s
+                    LEFT JOIN classes c ON s.class_id=c.id
+                    WHERE s.id=?""",(sid,)).fetchone()
+    if not stu:
+        conn.close(); return jsonify({'ok':False,'error':'Student not found'}),404
+
+    grades = q(conn,"""SELECT g.*,sub.name as subject_name
+                       FROM grades g JOIN subjects sub ON g.subject_id=sub.id
+                       WHERE g.student_id=? AND g.term=? ORDER BY sub.name""",
+               (sid, term)).fetchall()
+    if not grades:
+        conn.close(); return jsonify({'ok':False,'error':'No grades found for this term'})
+
+    grades_data = [dict(g) for g in grades]
+    scores_pct  = [(g['score'] or 0)/(g.get('max_score') or 100)*100 for g in grades_data]
+    avg         = sum(scores_pct)/len(scores_pct)
+    ltr, rmk, _ = grade_letter(avg)
+
+    pdf_bytes = build_report_pdf(dict(stu), grades_data, stu['class_name'] or '—', term, acad_year)
+    pdf_path  = f"reports/report_{sid}_{term.replace(' ','_')}_{acad_year}.pdf"
+    os.makedirs('reports', exist_ok=True)
+    with open(pdf_path,'wb') as fp: fp.write(pdf_bytes)
+
+    result = {'name':stu['full_name'],'email_status':'—','wa_status':'—'}
+
+    if do_email and stu['parent_email']:
+        email_body = f"<html><body><p>Dear {stu['parent_name'] or 'Parent/Guardian'},</p><p>Please find attached the {term} report card for <strong>{stu['full_name']}</strong>. Average: {avg:.1f}% | Grade: {ltr} — {rmk}</p><p>Regards, {SCHOOL_NAME}</p></body></html>"
+        ok, msg = send_email(stu['parent_email'], f"📋 {term} Report – {stu['full_name']}", email_body,
+                             attachments=[(f"Report_{stu['full_name']}.pdf", pdf_bytes)])
+        result['email_status'] = '✅ Sent' if ok else f'❌ {msg[:80]}'
+        q(conn,"""INSERT INTO report_deliveries(student_id,term,academic_year,channel,recipient,status,error_msg)
+                  VALUES(?,?,?,'email',?,?,?)""",
+          (sid,term,acad_year,stu['parent_email'],'sent' if ok else 'failed', None if ok else msg[:200]))
+        conn.commit()
+
+    if do_whatsapp:
+        num = stu['parent_whatsapp'] or stu['parent_phone']
+        if num:
+            wa = f"📋 *{term} Report — {stu['full_name']}*\nAverage: {avg:.1f}% | Grade: {ltr} — {rmk}\n{SCHOOL_NAME}"
+            ok, msg = send_whatsapp(num, wa)
+            result['wa_status'] = '✅ Sent' if ok else f'❌ {msg[:80]}'
+            q(conn,"""INSERT INTO report_deliveries(student_id,term,academic_year,channel,recipient,status,error_msg)
+                      VALUES(?,?,?,'whatsapp',?,?,?)""",
+              (sid,term,acad_year,num,'sent' if ok else 'failed', None if ok else msg[:200]))
+            conn.commit()
+
+    conn.close()
+    return jsonify({'ok':True,'result':result})
 
 @app.route('/api/admin/reports/download/<int:sid>')
 @login_required
@@ -1291,24 +1434,40 @@ const $$ = sel => document.querySelectorAll(sel);
 
 const API = {
   async get(url) {
-    const r = await fetch(url,{credentials:'include'});
-    if(r.status===401){location.href='/';return null;}
-    return r.json();
+    try {
+      const r = await fetch(url,{credentials:'include'});
+      if(r.status===401){location.href='/';return null;}
+      if(!r.ok) throw new Error(`HTTP ${r.status}`);
+      return await r.json();
+    } catch(e){ console.error('API.get',url,e); return null; }
   },
   async post(url,body={}) {
-    const r = await fetch(url,{method:'POST',credentials:'include',
-      headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-    if(r.status===401){location.href='/';return null;}
-    return r.json();
+    try {
+      const r = await fetch(url,{method:'POST',credentials:'include',
+        headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+      if(r.status===401){location.href='/';return null;}
+      if(!r.ok){
+        let msg='Server error '+r.status;
+        try{ const d=await r.json(); msg=d.error||d.message||msg; }catch(e){}
+        throw new Error(msg);
+      }
+      return await r.json();
+    } catch(e){ console.error('API.post',url,e); return {ok:false,error:e.message}; }
   },
   async put(url,body={}) {
-    const r = await fetch(url,{method:'PUT',credentials:'include',
-      headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-    return r.json();
+    try {
+      const r = await fetch(url,{method:'PUT',credentials:'include',
+        headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+      if(!r.ok) throw new Error(`HTTP ${r.status}`);
+      return await r.json();
+    } catch(e){ console.error('API.put',url,e); return {ok:false,error:e.message}; }
   },
   async del(url) {
-    const r = await fetch(url,{method:'DELETE',credentials:'include'});
-    return r.json();
+    try {
+      const r = await fetch(url,{method:'DELETE',credentials:'include'});
+      if(!r.ok) throw new Error(`HTTP ${r.status}`);
+      return await r.json();
+    } catch(e){ console.error('API.del',url,e); return {ok:false,error:e.message}; }
   }
 };
 
@@ -1643,35 +1802,32 @@ ADMIN_HTML = """<!DOCTYPE html><html lang="en"><head>
 <!-- ─── GRADES VIEW ───────────────────────────────────────────────────────── -->
 <div class="sec" id="sec-grades">
   <div class="pg-hdr">
-    <div class="pg-hdr-left"><h2>📈 Grades Overview</h2><p>View all entered grades</p></div>
+    <div class="pg-hdr-left"><h2>📈 Grades Overview</h2><p>View grades per class — rows = students, columns = subjects</p></div>
+    <button class="btn btn-ghost" onclick="loadGradesView()">🔄 Refresh</button>
   </div>
   <div class="filter-bar">
-    <select id="gv-class" onchange="loadGradesView()" style="min-width:200px">
+    <select id="gv-class" onchange="loadGradesView()" style="min-width:220px">
       <option value="">All Classes</option></select>
     <select id="gv-term" onchange="loadGradesView()" style="min-width:200px">
       <option>Mid Term 1</option><option selected>End of Term 1</option>
       <option>Mid Term 2</option><option>End of Term 2</option>
       <option>Mid Term 3</option><option>End of Term 3</option>
     </select>
+    <input id="gv-search" type="search" placeholder="🔍 Search student…" oninput="filterGradesTable()" style="min-width:200px">
   </div>
-  <div class="card">
-    <div class="tbl-wrap">
-      <table><thead><tr><th>Student</th><th>Subject</th><th>Score</th><th>%</th><th>Grade</th><th>Method</th></tr></thead>
-        <tbody id="gradeViewTbody"></tbody></table>
-    </div>
-  </div>
+  <div id="gradeViewContainer"></div>
 </div>
 
 <!-- ─── REPORTS ───────────────────────────────────────────────────────────── -->
 <div class="sec" id="sec-reports">
   <div class="pg-hdr">
-    <div class="pg-hdr-left"><h2>📋 Generate Reports</h2><p>Generate and send report cards to parents</p></div>
+    <div class="pg-hdr-left"><h2>📋 Report Cards</h2><p>Generate PDF reports and send to parents via Email or WhatsApp</p></div>
   </div>
   <div class="card" style="margin-bottom:20px">
-    <div class="card-hdr"><h3>⚙️ Report Configuration</h3></div>
+    <div class="card-hdr"><h3>⚙️ Configuration</h3></div>
     <div class="card-bod">
       <div class="frow">
-        <div class="fg"><label class="flbl">Class (leave blank for all)</label>
+        <div class="fg"><label class="flbl">Class</label>
           <select id="rp-class"><option value="">All Classes</option></select></div>
         <div class="fg"><label class="flbl">Term</label>
           <select id="rp-term">
@@ -1680,21 +1836,42 @@ ADMIN_HTML = """<!DOCTYPE html><html lang="en"><head>
             <option>Mid Term 3</option><option>End of Term 3</option>
           </select></div>
         <div class="fg"><label class="flbl">Academic Year</label>
-          <input id="rp-year" value="2025" type="number"></div>
+          <input id="rp-year" value="2025" type="number" style="max-width:120px"></div>
       </div>
-      <div style="display:flex;gap:24px;flex-wrap:wrap;margin:18px 0">
-        <label style="display:flex;align-items:center;gap:9px;font-size:14px;font-weight:600;cursor:pointer">
-          <input type="checkbox" id="rp-email" style="width:auto;width:17px;height:17px;accent-color:var(--pri)">
-          📧 Send PDF via Email to parent
-        </label>
-        <label style="display:flex;align-items:center;gap:9px;font-size:14px;font-weight:600;cursor:pointer">
-          <input type="checkbox" id="rp-wa" style="width:auto;width:17px;height:17px;accent-color:var(--grn)">
-          💬 Send notification via WhatsApp
-        </label>
+      <div style="background:var(--g50);border-radius:var(--r12);padding:16px 20px;margin:16px 0">
+        <div style="font-size:13px;font-weight:700;color:var(--g700);margin-bottom:12px">📤 Delivery Options</div>
+        <div style="display:flex;gap:28px;flex-wrap:wrap">
+          <label style="display:flex;align-items:center;gap:9px;font-size:14px;font-weight:600;cursor:pointer">
+            <input type="checkbox" id="rp-email" style="width:17px;height:17px;accent-color:var(--pri)">
+            <span>📧 Email PDF to parent</span>
+          </label>
+          <label style="display:flex;align-items:center;gap:9px;font-size:14px;font-weight:600;cursor:pointer">
+            <input type="checkbox" id="rp-wa" style="width:17px;height:17px;accent-color:var(--grn)">
+            <span>💬 WhatsApp notification</span>
+          </label>
+        </div>
+        <div style="margin-top:10px;font-size:12px;color:var(--g500)">
+          ⚠️ Requires EMAIL_USER / TWILIO env vars to be set. Reports are also saved as PDFs for manual download.
+        </div>
       </div>
-      <div style="display:flex;gap:10px;flex-wrap:wrap">
-        <button class="btn btn-pri btn-lg" id="genBtn" onclick="generateReports()">🚀 Generate &amp; Send Reports</button>
-        <button class="btn btn-ghost" onclick="loadDeliveries()">📜 Delivery Log</button>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+        <button class="btn btn-pri btn-lg" id="genBtn" onclick="generateReports()">🚀 Generate Reports</button>
+        <button class="btn btn-ghost" onclick="sec(document.querySelector('[data-sec=deliveries]'))">📜 Delivery Log</button>
+      </div>
+    </div>
+  </div>
+  <!-- Progress bar -->
+  <div id="rp-progress" style="display:none;margin-bottom:20px">
+    <div class="card">
+      <div class="card-bod">
+        <div style="display:flex;justify-content:space-between;font-size:13px;font-weight:600;margin-bottom:8px">
+          <span id="rp-prog-label">Generating reports…</span>
+          <span id="rp-prog-pct">0%</span>
+        </div>
+        <div style="background:var(--g100);border-radius:999px;height:10px;overflow:hidden">
+          <div id="rp-prog-bar" style="background:linear-gradient(90deg,var(--pri),var(--vio));height:100%;width:0%;transition:width .3s;border-radius:999px"></div>
+        </div>
+        <div id="rp-prog-current" style="font-size:12px;color:var(--g500);margin-top:6px"></div>
       </div>
     </div>
   </div>
@@ -2074,19 +2251,62 @@ async function delAssign(id){
 }
 
 // ── GRADES VIEW ───────────────────────────────────────────────────────────────
+let _gradeData = [];
 async function loadGradesView(){
   const cid  = $('gv-class').value;
   const term = $('gv-term').value;
-  const rows = await API.get(`/api/admin/grades?class_id=${cid}&term=${encodeURIComponent(term)}`) || [];
-  $('gradeViewTbody').innerHTML = rows.length ? rows.map(r=>`<tr>
-    <td><strong>${r.student_name}</strong></td>
-    <td>${r.subject_name}</td>
-    <td style="font-weight:800">${r.score??'—'}</td>
-    <td>${r.score!=null?pct(r.score,r.max_score||100):'—'}</td>
-    <td>${r.score!=null?gradeChip(r.score,r.max_score||100):'—'}</td>
-    <td><span class="badge badge-sky">${r.method||'manual'}</span></td>
-  </tr>`).join('')
-  : '<tr><td colspan="6"><div class="empty"><div class="ei">📈</div><h4>No grades for this selection</h4></div></td></tr>';
+  const container = $('gradeViewContainer');
+  container.innerHTML = '<div class="empty"><div class="ei" style="animation:spin 1s linear infinite">⏳</div><p>Loading grades…</p></div>';
+  _gradeData = await API.get(`/api/admin/grades?class_id=${cid}&term=${encodeURIComponent(term)}`) || [];
+  if(!_gradeData.length){
+    container.innerHTML = '<div class="card"><div class="card-bod"><div class="empty"><div class="ei">📈</div><h4>No grades entered yet for this selection</h4><p>Teachers need to enter grades first</p></div></div></div>';
+    return;
+  }
+  renderGradesTables(_gradeData);
+}
+function filterGradesTable(){
+  if(!_gradeData.length) return;
+  const q = ($('gv-search').value||'').toLowerCase();
+  if(!q){ renderGradesTables(_gradeData); return; }
+  const filtered = _gradeData.map(cls=>({
+    ...cls,
+    students: cls.students.filter(s=>s.student_name.toLowerCase().includes(q))
+  })).filter(cls=>cls.students.length);
+  renderGradesTables(filtered);
+}
+function renderGradesTables(data){
+  const container = $('gradeViewContainer');
+  container.innerHTML = data.map(cls=>{
+    const subs = cls.subjects;
+    const thead = `<tr><th>Student</th>${subs.map(s=>`<th style="min-width:90px;text-align:center">${s}</th>`).join('')}<th style="text-align:center">Average</th><th style="text-align:center">Grade</th></tr>`;
+    const tbody = cls.students.map(stu=>{
+      const cells = subs.map(sub=>{
+        const sg = stu.subjects[sub];
+        if(!sg) return `<td style="text-align:center;color:var(--g300)">—</td>`;
+        const score = sg.score ?? null;
+        const maxS  = sg.max || 100;
+        if(score===null) return `<td style="text-align:center;color:var(--g300)">—</td>`;
+        const pctVal = Math.round(score/maxS*100);
+        return `<td style="text-align:center">
+          <div style="font-weight:800;font-size:14px">${score}</div>
+          <div style="font-size:11px;color:var(--g400)">${pctVal}%</div>
+          <div style="margin-top:2px">${gradeChip(score,maxS)}</div>
+        </td>`;
+      }).join('');
+      const avg = stu.average;
+      const avgCell = avg!=null
+        ? `<td style="text-align:center;font-weight:800;color:var(--pri)">${avg}%</td><td style="text-align:center">${gradeChip(avg)}</td>`
+        : `<td style="text-align:center;color:var(--g300)">—</td><td>—</td>`;
+      return `<tr><td><strong>${stu.student_name}</strong></td>${cells}${avgCell}</tr>`;
+    }).join('');
+    return `<div class="card" style="margin-bottom:20px">
+      <div class="card-hdr">
+        <h3>🏛️ ${cls.class_name}</h3>
+        <span class="badge badge-pri">👨‍🎓 ${cls.students.length} students · 📚 ${subs.length} subjects</span>
+      </div>
+      <div class="tbl-wrap"><table><thead>${thead}</thead><tbody>${tbody}</tbody></table></div>
+    </div>`;
+  }).join('');
 }
 
 // ── REPORTS ───────────────────────────────────────────────────────────────────
@@ -2099,44 +2319,114 @@ async function initReports(){
 }
 async function generateReports(){
   const btn = $('genBtn');
+  const term = $('rp-term').value;
+  const yr   = $('rp-year').value;
+  const doEmail = $('rp-email').checked;
+  const doWa    = $('rp-wa').checked;
+
+  // Reset UI
   btn.disabled = true; btn.innerHTML = '⏳ Generating…';
-  const r = await API.post('/api/admin/reports/generate',{
-    class_id: $('rp-class').value||null,
-    term: $('rp-term').value,
-    academic_year: $('rp-year').value,
-    send_email: $('rp-email').checked,
-    send_whatsapp: $('rp-wa').checked
-  });
-  btn.disabled = false; btn.innerHTML = '🚀 Generate &amp; Send Reports';
-  if(!r?.ok){ toast('Error generating reports','error'); return; }
-  const term = $('rp-term').value; const yr = $('rp-year').value;
+  $('rp-progress').style.display = 'block';
+  $('rp-prog-bar').style.width = '10%';
+  $('rp-prog-pct').textContent = '…';
+  $('rp-prog-label').textContent = 'Generating reports, please wait…';
+  $('rp-prog-current').textContent = 'This may take a moment for large classes';
+  $('rp-results').innerHTML = '';
+
+  let r;
+  try {
+    r = await API.post('/api/admin/reports/generate',{
+      class_id: $('rp-class').value||null,
+      term, academic_year: yr,
+      send_email: doEmail,
+      send_whatsapp: doWa
+    });
+  } catch(e) {
+    r = {ok:false, error: e.message};
+  }
+
+  // Always re-enable button and complete bar regardless of outcome
+  btn.disabled = false; btn.innerHTML = '🚀 Generate Reports';
+  $('rp-prog-bar').style.width = '100%';
+  $('rp-prog-pct').textContent = '100%';
+
+  if(!r || !r.ok){
+    $('rp-progress').style.display='none';
+    toast((r?.error)||'Error generating reports — check server logs','error'); return;
+  }
+
+  $('rp-prog-label').textContent = `✅ Done — ${r.generated} generated, ${r.skipped} skipped`;
+  $('rp-prog-current').textContent = '';
+
+  // Summary badges
+  const emailSent  = r.results.filter(x=>x.email_status?.startsWith('✅')).length;
+  const waSent     = r.results.filter(x=>x.wa_status?.startsWith('✅')).length;
+
   $('rp-results').innerHTML = `
+    <div class="stat-grid" style="margin-bottom:20px">
+      <div class="stat-card"><div class="stat-ic" style="background:#ede9fe;color:var(--pri)">📋</div>
+        <div class="stat-inf"><div class="val">${r.generated}</div><div class="lbl">Reports Generated</div></div></div>
+      <div class="stat-card"><div class="stat-ic" style="background:#d1fae5;color:var(--grn)">✅</div>
+        <div class="stat-inf"><div class="val">${r.total}</div><div class="lbl">Students Processed</div></div></div>
+      <div class="stat-card"><div class="stat-ic" style="background:#e0f2fe;color:var(--sky)">📧</div>
+        <div class="stat-inf"><div class="val">${emailSent}</div><div class="lbl">Emails Sent</div></div></div>
+      <div class="stat-card"><div class="stat-ic" style="background:#f0fdf4;color:var(--grn)">💬</div>
+        <div class="stat-inf"><div class="val">${waSent}</div><div class="lbl">WhatsApp Sent</div></div></div>
+    </div>
     <div class="card">
-      <div class="card-hdr"><h3>📋 Results — ${r.total} students processed</h3>
-        <span class="badge badge-grn">${r.results.filter(x=>x.grade).length} reports generated</span>
+      <div class="card-hdr">
+        <h3>📋 ${term} — ${yr} Results</h3>
+        <div style="display:flex;gap:8px">
+          <span class="badge badge-grn">${r.generated} generated</span>
+          ${r.skipped?'<span class="badge badge-amb">'+r.skipped+' skipped</span>':''}
+        </div>
       </div>
-      <div class="card-bod" style="padding:0">
-        <div class="tbl-wrap"><table>
-          <thead><tr><th>Student</th><th>Class</th><th>Average</th><th>Grade</th>
-            <th>Email</th><th>WhatsApp</th><th>Download</th></tr></thead>
-          <tbody>${r.results.map(row=>row.status==='skipped'?`
-            <tr><td><strong>${row.name}</strong></td><td>—</td><td colspan="5">
-              <span class="badge badge-amb">⚠️ Skipped: ${row.reason}</span></td></tr>`:`
-            <tr>
-              <td><strong>${row.name}</strong></td>
-              <td>${row.class||'—'}</td>
-              <td><strong>${row.avg}%</strong></td>
-              <td>${gradeChip(row.avg)}</td>
-              <td style="font-size:12px">${row.email_status||'—'}</td>
-              <td style="font-size:12px">${row.wa_status||'—'}</td>
-              <td><a href="/api/admin/reports/download/${row.id}?term=${encodeURIComponent(term)}&year=${yr}"
-                class="btn btn-sm btn-ghost" target="_blank">⬇ PDF</a></td>
-            </tr>`).join('')}
-          </tbody>
-        </table></div>
+      <div class="tbl-wrap">
+        <table><thead><tr>
+          <th>Student</th><th>Class</th><th>Subjects</th><th>Average</th><th>Grade</th>
+          <th>📧 Email</th><th>💬 WhatsApp</th><th>Download</th>
+        </tr></thead>
+        <tbody>${r.results.map(row=>row.status==='skipped'?`
+          <tr style="background:#fffbeb">
+            <td><strong>${row.name}</strong></td>
+            <td>${row.class||'—'}</td>
+            <td colspan="6"><span class="badge badge-amb">⚠️ Skipped: ${row.reason}</span></td>
+          </tr>`:`
+          <tr>
+            <td><strong>${row.name}</strong></td>
+            <td><span class="badge badge-sky">${row.class||'—'}</span></td>
+            <td style="text-align:center">${row.subjects||'—'}</td>
+            <td><strong>${row.avg}%</strong></td>
+            <td>${gradeChip(row.avg)}</td>
+            <td style="font-size:12px">${row.email_status||'—'}</td>
+            <td style="font-size:12px">${row.wa_status||'—'}</td>
+            <td style="display:flex;gap:6px;flex-wrap:wrap">
+              <a href="/api/admin/reports/download/${row.id}?term=${encodeURIComponent(term)}&year=${yr}"
+                class="btn btn-sm btn-ghost" target="_blank">⬇ PDF</a>
+              <button class="btn btn-sm btn-pri-out"
+                onclick="resendReport(${row.id},'${term.replace(/'/g,"\\'")}','${yr}',this)">📤 Resend</button>
+            </td>
+          </tr>`).join('')}
+        </tbody></table>
       </div>
     </div>`;
-  toast(`${r.results.filter(x=>x.grade).length} reports generated! 🎉`);
+  toast(`${r.generated} reports generated! 🎉`);
+}
+
+async function resendReport(sid, term, yr, btn){
+  const doEmail = $('rp-email').checked;
+  const doWa    = $('rp-wa').checked;
+  if(!doEmail && !doWa){ toast('Check at least one delivery option above','warn'); return; }
+  btn.disabled=true; btn.textContent='⏳';
+  const r = await API.post('/api/admin/reports/resend',{
+    student_id:sid, term, academic_year:yr, send_email:doEmail, send_whatsapp:doWa
+  });
+  btn.disabled=false; btn.textContent='📤 Resend';
+  if(r?.ok){
+    toast(`Resent to ${r.result.name} — Email: ${r.result.email_status} | WA: ${r.result.wa_status}`);
+  } else {
+    toast(r?.error||'Resend failed','error');
+  }
 }
 
 // ── DELIVERIES LOG ────────────────────────────────────────────────────────────

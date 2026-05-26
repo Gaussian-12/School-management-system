@@ -6,3 +6,5 @@ reports/
 .env
 *.log
 .DS_Store
+sms.db
+*.db
