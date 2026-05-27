@@ -1,30 +1,20 @@
 """
 ╔══════════════════════════════════════════════════════════════════════════════╗
 ║         SUNRISE ACADEMY - School Management System                          ║
-║         PostgreSQL Version - Data Never Lost!                               ║
+║         Professional Edition for Malawi Schools                             ║
+║                                                                              ║
+║  SETUP:                                                                      ║
+║    pip install flask flask-cors bcrypt weasyprint pillow pytesseract        ║
+║                                                                              ║
+║  ENV VARIABLES (optional for email/whatsapp):                                ║
+║    EMAIL_USER, EMAIL_PASS, EMAIL_HOST, EMAIL_PORT                           ║
+║    TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM_WHATSAPP             ║
+║                                                                              ║
+║  DEFAULT ADMIN: admin@school.mw / Admin@2025                                ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 """
 
 from flask import (Flask, render_template_string, request, jsonify,
-
-def login_required(f):
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        if 'user_id' not in session:
-            if request.is_json:
-                return jsonify({'error': 'Login required'}), 401
-            return redirect('/')
-        return f(*args, **kwargs)
-    return decorated
-
-def admin_required(f):
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        if session.get('role') != 'admin':
-            return jsonify({'error': 'Admin access required'}), 403
-        return f(*args, **kwargs)
-    return decorated
-
                    send_file, session, redirect, url_for)
 from flask_cors import CORS
 import sqlite3, bcrypt, os, base64, io, re, json, smtplib
@@ -34,8 +24,6 @@ from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
 from email import encoders
 from functools import wraps
-import psycopg2
-from psycopg2.extras import RealDictCursor
 
 # ── Optional heavy dependencies ───────────────────────────────────────────────
 try:
@@ -67,76 +55,64 @@ TWILIO_TKN  = os.environ.get('TWILIO_AUTH_TOKEN', '')
 TWILIO_FROM = os.environ.get('TWILIO_FROM_WHATSAPP', 'whatsapp:+14155238886')
 
 # ══════════════════════════════════════════════════════════════════════════════
-# DATABASE - Supports both SQLite and PostgreSQL
+# DATABASE
 # ══════════════════════════════════════════════════════════════════════════════
 DB = 'sms.db'
-DATABASE_URL = os.environ.get('DATABASE_URL', '')
-USE_POSTGRES = DATABASE_URL and DATABASE_URL.startswith('postgres')
 
 def get_db():
-    """Get database connection - works with both SQLite and PostgreSQL"""
-    if USE_POSTGRES:
-        conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
-        return conn
-    else:
-        conn = sqlite3.connect(DB)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys = ON")
-        return conn
+    c = sqlite3.connect(DB)
+    c.row_factory = sqlite3.Row
+    c.execute("PRAGMA foreign_keys = ON")
+    return c
 
 def q(conn, sql, params=()):
-    """Execute query - works with both database types"""
-    if USE_POSTGRES:
-        # Convert ? placeholders to %s for PostgreSQL
-        sql = sql.replace('?', '%s')
     return conn.execute(sql, params)
 
 def init_db():
-    """Initialize database - works with PostgreSQL"""
     conn = get_db()
-    cursor = conn.cursor()
-    
-    # Create tables (PostgreSQL compatible syntax)
-    tables_sql = '''
+    c = conn.cursor()
+
+    c.executescript('''
     CREATE TABLE IF NOT EXISTS users (
-        id SERIAL PRIMARY KEY,
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
         username TEXT UNIQUE NOT NULL,
-        password TEXT NOT NULL,
+        password BLOB NOT NULL,
         full_name TEXT NOT NULL,
         email TEXT,
         phone TEXT,
         whatsapp TEXT,
-        role TEXT NOT NULL CHECK(role IN ('admin', 'teacher')),
+        role TEXT NOT NULL CHECK(role IN ("admin","teacher")),
         approved INTEGER DEFAULT 0,
         subjects_note TEXT,
-        avatar_color TEXT DEFAULT '#4f46e5',
+        avatar_color TEXT DEFAULT "#4f46e5",
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
-    
+
     CREATE TABLE IF NOT EXISTS classes (
-        id SERIAL PRIMARY KEY,
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL,
         grade_level INTEGER DEFAULT 1,
         stream TEXT,
-        academic_year TEXT DEFAULT '2025',
-        class_teacher_id INTEGER REFERENCES users(id)
+        academic_year TEXT DEFAULT "2025",
+        class_teacher_id INTEGER,
+        FOREIGN KEY(class_teacher_id) REFERENCES users(id)
     );
-    
+
     CREATE TABLE IF NOT EXISTS subjects (
-        id SERIAL PRIMARY KEY,
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL,
         code TEXT,
         max_marks INTEGER DEFAULT 100,
         pass_mark INTEGER DEFAULT 50
     );
-    
+
     CREATE TABLE IF NOT EXISTS students (
-        id SERIAL PRIMARY KEY,
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
         admission_number TEXT UNIQUE NOT NULL,
         full_name TEXT NOT NULL,
         gender TEXT,
         date_of_birth TEXT,
-        class_id INTEGER REFERENCES classes(id),
+        class_id INTEGER,
         parent_name TEXT,
         parent_email TEXT,
         parent_phone TEXT,
@@ -144,67 +120,77 @@ def init_db():
         address TEXT,
         photo_url TEXT,
         enrolled_date TEXT DEFAULT CURRENT_DATE,
-        active INTEGER DEFAULT 1
+        active INTEGER DEFAULT 1,
+        FOREIGN KEY(class_id) REFERENCES classes(id)
     );
-    
+
     CREATE TABLE IF NOT EXISTS teacher_subjects (
-        id SERIAL PRIMARY KEY,
-        teacher_id INTEGER NOT NULL REFERENCES users(id),
-        subject_id INTEGER NOT NULL REFERENCES subjects(id),
-        class_id INTEGER NOT NULL REFERENCES classes(id),
-        UNIQUE(teacher_id, subject_id, class_id)
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        teacher_id INTEGER NOT NULL,
+        subject_id INTEGER NOT NULL,
+        class_id INTEGER NOT NULL,
+        UNIQUE(teacher_id, subject_id, class_id),
+        FOREIGN KEY(teacher_id) REFERENCES users(id),
+        FOREIGN KEY(subject_id) REFERENCES subjects(id),
+        FOREIGN KEY(class_id) REFERENCES classes(id)
     );
-    
+
     CREATE TABLE IF NOT EXISTS grades (
-        id SERIAL PRIMARY KEY,
-        student_id INTEGER NOT NULL REFERENCES students(id),
-        subject_id INTEGER NOT NULL REFERENCES subjects(id),
-        teacher_id INTEGER NOT NULL REFERENCES users(id),
-        class_id INTEGER NOT NULL REFERENCES classes(id),
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        student_id INTEGER NOT NULL,
+        subject_id INTEGER NOT NULL,
+        teacher_id INTEGER NOT NULL,
+        class_id INTEGER NOT NULL,
         score REAL,
         max_score REAL DEFAULT 100,
-        method TEXT DEFAULT 'manual',
+        method TEXT DEFAULT "manual",
         term TEXT NOT NULL,
-        academic_year TEXT DEFAULT '2025',
+        academic_year TEXT DEFAULT "2025",
         comment TEXT,
         entered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE(student_id, subject_id, term, academic_year)
+        UNIQUE(student_id, subject_id, term, academic_year),
+        FOREIGN KEY(student_id) REFERENCES students(id),
+        FOREIGN KEY(subject_id) REFERENCES subjects(id),
+        FOREIGN KEY(teacher_id) REFERENCES users(id),
+        FOREIGN KEY(class_id) REFERENCES classes(id)
     );
-    
+
     CREATE TABLE IF NOT EXISTS attendance (
-        id SERIAL PRIMARY KEY,
-        student_id INTEGER NOT NULL REFERENCES students(id),
-        class_id INTEGER NOT NULL REFERENCES classes(id),
-        teacher_id INTEGER NOT NULL REFERENCES users(id),
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        student_id INTEGER NOT NULL,
+        class_id INTEGER NOT NULL,
+        teacher_id INTEGER NOT NULL,
         date TEXT NOT NULL,
-        status TEXT NOT NULL CHECK(status IN ('present', 'absent', 'late', 'excused')),
+        status TEXT NOT NULL CHECK(status IN ("present","absent","late","excused")),
         note TEXT,
-        UNIQUE(student_id, date)
+        UNIQUE(student_id, date),
+        FOREIGN KEY(student_id) REFERENCES students(id)
     );
-    
+
     CREATE TABLE IF NOT EXISTS report_deliveries (
-        id SERIAL PRIMARY KEY,
-        student_id INTEGER NOT NULL REFERENCES students(id),
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        student_id INTEGER NOT NULL,
         term TEXT NOT NULL,
-        academic_year TEXT DEFAULT '2025',
+        academic_year TEXT DEFAULT "2025",
         channel TEXT NOT NULL,
         recipient TEXT,
-        status TEXT DEFAULT 'sent',
+        status TEXT DEFAULT "sent",
         error_msg TEXT,
-        sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(student_id) REFERENCES students(id)
     );
-    
+
     CREATE TABLE IF NOT EXISTS announcements (
-        id SERIAL PRIMARY KEY,
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
         title TEXT NOT NULL,
         body TEXT NOT NULL,
-        author_id INTEGER REFERENCES users(id),
+        author_id INTEGER,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
-    
+
     CREATE TABLE IF NOT EXISTS fees (
-        id SERIAL PRIMARY KEY,
-        student_id INTEGER NOT NULL REFERENCES students(id),
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        student_id INTEGER NOT NULL,
         academic_year TEXT DEFAULT '2025',
         term TEXT NOT NULL,
         amount_due REAL DEFAULT 0,
@@ -213,127 +199,263 @@ def init_db():
         paid_date TEXT,
         status TEXT DEFAULT 'unpaid',
         note TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(student_id) REFERENCES students(id)
     );
-    
+
     CREATE TABLE IF NOT EXISTS homework (
-        id SERIAL PRIMARY KEY,
-        teacher_id INTEGER NOT NULL REFERENCES users(id),
-        class_id INTEGER NOT NULL REFERENCES classes(id),
-        subject_id INTEGER NOT NULL REFERENCES subjects(id),
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        teacher_id INTEGER NOT NULL,
+        class_id INTEGER NOT NULL,
+        subject_id INTEGER NOT NULL,
         title TEXT NOT NULL,
         description TEXT,
         due_date TEXT,
         max_marks INTEGER DEFAULT 0,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(teacher_id) REFERENCES users(id),
+        FOREIGN KEY(class_id) REFERENCES classes(id),
+        FOREIGN KEY(subject_id) REFERENCES subjects(id)
     );
-    
+
     CREATE TABLE IF NOT EXISTS homework_submissions (
-        id SERIAL PRIMARY KEY,
-        homework_id INTEGER NOT NULL REFERENCES homework(id),
-        student_id INTEGER NOT NULL REFERENCES students(id),
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        homework_id INTEGER NOT NULL,
+        student_id INTEGER NOT NULL,
         status TEXT DEFAULT 'pending',
         marks INTEGER,
         note TEXT,
         submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE(homework_id, student_id)
+        UNIQUE(homework_id, student_id),
+        FOREIGN KEY(homework_id) REFERENCES homework(id),
+        FOREIGN KEY(student_id) REFERENCES students(id)
     );
-    
+
     CREATE TABLE IF NOT EXISTS school_settings (
         key TEXT PRIMARY KEY,
         value TEXT
     );
-    
+
     CREATE TABLE IF NOT EXISTS timetable (
-        id SERIAL PRIMARY KEY,
-        class_id INTEGER NOT NULL REFERENCES classes(id),
-        subject_id INTEGER NOT NULL REFERENCES subjects(id),
-        teacher_id INTEGER REFERENCES users(id),
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        class_id INTEGER NOT NULL,
+        subject_id INTEGER NOT NULL,
+        teacher_id INTEGER,
         day_of_week INTEGER NOT NULL CHECK(day_of_week BETWEEN 1 AND 5),
         period INTEGER NOT NULL CHECK(period BETWEEN 1 AND 10),
         start_time TEXT NOT NULL,
         end_time TEXT NOT NULL,
         room TEXT,
         academic_year TEXT DEFAULT '2025',
-        UNIQUE(class_id, day_of_week, period, academic_year)
+        UNIQUE(class_id, day_of_week, period, academic_year),
+        FOREIGN KEY(class_id) REFERENCES classes(id),
+        FOREIGN KEY(subject_id) REFERENCES subjects(id),
+        FOREIGN KEY(teacher_id) REFERENCES users(id)
     );
-    '''
-    
-    # Execute each statement separately for PostgreSQL compatibility
-    for statement in tables_sql.split(';'):
-        if statement.strip():
-            try:
-                cursor.execute(statement)
-            except Exception as e:
-                if 'already exists' not in str(e).lower():
-                    print(f"Warning: {e}")
-    
-    # Seed admin account
-    admin_pwd = bcrypt.hashpw('Admin@2025'.encode(), bcrypt.gensalt())
-    cursor.execute("SELECT 1 FROM users WHERE username = 'admin@school.mw'")
-    if not cursor.fetchone():
-        cursor.execute('''
-            INSERT INTO users (username, password, full_name, email, role, approved, avatar_color)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
-        ''', ('admin@school.mw', admin_pwd.decode(), 'System Administrator', 'admin@school.mw', 'admin', 1, '#4f46e5'))
-    
-    # Seed subjects
-    subjects_data = [
-        ('Mathematics', 'MATH', 100, 50),
-        ('English Language', 'ENG', 100, 50),
-        ('Chichewa', 'CHICH', 100, 50),
-        ('Integrated Science', 'SCI', 100, 50),
-        ('Social Studies', 'SOC', 100, 50),
-        ('Religious Education', 'RE', 100, 50),
-    ]
-    for name, code, max_m, pass_m in subjects_data:
-        cursor.execute("SELECT 1 FROM subjects WHERE name = %s", (name,))
-        if not cursor.fetchone():
-            cursor.execute('''
-                INSERT INTO subjects (name, code, max_marks, pass_mark)
-                VALUES (%s, %s, %s, %s)
-            ''', (name, code, max_m, pass_m))
-    
-    # Seed classes
-    classes_data = [
-        ('Standard 1 A', 1, 'A', '2025'),
-        ('Standard 1 B', 1, 'B', '2025'),
-        ('Standard 2 A', 2, 'A', '2025'),
-        ('Standard 3 A', 3, 'A', '2025'),
-        ('Standard 4 A', 4, 'A', '2025'),
-        ('Standard 5 A', 5, 'A', '2025'),
-        ('Standard 6 A', 6, 'A', '2025'),
-        ('Standard 7 A', 7, 'A', '2025'),
-        ('Standard 8 A', 8, 'A', '2025'),
-    ]
-    for name, gl, st, year in classes_data:
-        cursor.execute("SELECT 1 FROM classes WHERE name = %s", (name,))
-        if not cursor.fetchone():
-            cursor.execute('''
-                INSERT INTO classes (name, grade_level, stream, academic_year)
-                VALUES (%s, %s, %s, %s)
-            ''', (name, gl, st, year))
-    
-    conn.commit()
-    conn.close()
-    print(f"✅ Database initialised ({'PostgreSQL' if USE_POSTGRES else 'SQLite'})")
+    ''')
 
-# Initialize database
+    # Seed admin
+    pwd = bcrypt.hashpw('Admin@2025'.encode(), bcrypt.gensalt())
+    c.execute("""INSERT OR IGNORE INTO users
+                 (username,password,full_name,email,role,approved,avatar_color)
+                 VALUES(?,?,?,?,?,?,?)""",
+              ('admin@school.mw', pwd, 'System Administrator',
+               'admin@school.mw', 'admin', 1, '#4f46e5'))
+
+    # Seed subjects (Malawi primary curriculum)
+    for name, code, mx in [
+        ('Mathematics','MATH',100),('English Language','ENG',100),
+        ('Chichewa','CHICH',100),('Integrated Science','SCI',100),
+        ('Social Studies','SOC',100),('Religious Education','RE',100),
+        ('Expressive Arts','ARTS',100),('Life Skills','LIFE',100)]:
+        c.execute("INSERT OR IGNORE INTO subjects(name,code,max_marks) VALUES(?,?,?)",
+                  (name, code, mx))
+
+    # Seed classes
+    for name, gl, st in [
+        ('Standard 1 A',1,'A'),('Standard 1 B',1,'B'),
+        ('Standard 2 A',2,'A'),('Standard 3 A',3,'A'),
+        ('Standard 4 A',4,'A'),('Standard 5 A',5,'A'),
+        ('Standard 6 A',6,'A'),('Standard 7 A',7,'A'),('Standard 8 A',8,'A')]:
+        c.execute("INSERT OR IGNORE INTO classes(name,grade_level,stream) VALUES(?,?,?)",
+                  (name, gl, st))
+
+    conn.commit(); conn.close()
+    print(f"✅ Database initialised → {DB}")
+
 init_db()
 
 # ══════════════════════════════════════════════════════════════════════════════
-# COPY ALL YOUR ROUTES HERE FROM YOUR ORIGINAL app.py
+# DECORATORS
 # ══════════════════════════════════════════════════════════════════════════════
+def login_required(f):
+    @wraps(f)
+    def d(*a, **kw):
+        if 'user_id' not in session:
+            return (jsonify({'error':'Login required'}),401) if request.is_json else redirect('/')
+        return f(*a, **kw)
+    return d
 
-# First, let's append the entire original app.py content (excluding the database setup)
-# We'll do this by reading your original file
-
-
+def admin_required(f):
+    @wraps(f)
+    def d(*a, **kw):
+        if session.get('role') != 'admin':
+            return jsonify({'error':'Admin access required'}), 403
+        return f(*a, **kw)
+    return d
 
 # ══════════════════════════════════════════════════════════════════════════════
-# ROUTES AND TEMPLATES (from original app.py)
+# UTILITIES
 # ══════════════════════════════════════════════════════════════════════════════
+def grade_letter(score, max_s=100):
+    pct = (score / max_s) * 100 if max_s else 0
+    if pct >= 80: return 'A', 'Distinction',   '#059669'
+    if pct >= 65: return 'B', 'Credit',         '#0284c7'
+    if pct >= 50: return 'C', 'Pass',           '#d97706'
+    if pct >= 40: return 'D', 'Satisfactory',   '#ea580c'
+    return             'F', 'Fail',             '#dc2626'
 
+def send_email(to, subject, body_html, attachments=None):
+    if not EMAIL_USER:
+        return False, "Email not configured (set EMAIL_USER env var)"
+    try:
+        msg = MIMEMultipart('alternative')
+        msg['From'] = f"{SCHOOL_NAME} <{EMAIL_USER}>"
+        msg['To'] = to
+        msg['Subject'] = subject
+        msg.attach(MIMEText(body_html, 'html'))
+        if attachments:
+            for name, data in attachments:
+                p = MIMEBase('application','octet-stream')
+                p.set_payload(data)
+                encoders.encode_base64(p)
+                p.add_header('Content-Disposition', f'attachment; filename="{name}"')
+                msg.attach(p)
+        with smtplib.SMTP(EMAIL_HOST, EMAIL_PORT, timeout=15) as s:
+            s.ehlo(); s.starttls(); s.login(EMAIL_USER, EMAIL_PASS)
+            s.send_message(msg)
+        return True, "Sent"
+    except Exception as e:
+        return False, str(e)
+
+def send_whatsapp(to, body):
+    if not TWILIO_SID:
+        return False, "Twilio not configured (set TWILIO_ACCOUNT_SID env var)"
+    try:
+        from twilio.rest import Client
+        Client(TWILIO_SID, TWILIO_TKN).messages.create(
+            from_=TWILIO_FROM, to=f"whatsapp:{to}", body=body)
+        return True, "Sent"
+    except Exception as e:
+        return False, str(e)
+
+def build_report_pdf(student, grades, cls_name, term, acad_year):
+    if not grades:
+        return None
+    total = sum(g['score'] or 0 for g in grades)
+    avg   = total / len(grades)
+    ltr, rmk, clr = grade_letter(avg)
+
+    rows = ''.join(f"""
+      <tr>
+        <td class="sub">{g['subject_name']}</td>
+        <td class="num">{int(g['max_score'] or 100)}</td>
+        <td class="num fw">{int(g['score'] or 0)}</td>
+        <td class="num">{int((g['score'] or 0)/(g['max_score'] or 100)*100)}%</td>
+        <td class="num">
+          <span class="chip" style="background:{'#d1fae5' if (g['score'] or 0)>=(g['max_score'] or 100)*0.8 else '#dbeafe' if (g['score'] or 0)>=(g['max_score'] or 100)*0.65 else '#fef3c7' if (g['score'] or 0)>=(g['max_score'] or 100)*0.5 else '#fee2e2'};
+          color:{'#065f46' if (g['score'] or 0)>=(g['max_score'] or 100)*0.8 else '#1e40af' if (g['score'] or 0)>=(g['max_score'] or 100)*0.65 else '#78350f' if (g['score'] or 0)>=(g['max_score'] or 100)*0.5 else '#7f1d1d'}">
+          {grade_letter(g['score'] or 0, g['max_score'] or 100)[0]}</span>
+        </td>
+        <td class="com">{g.get('comment','') or '—'}</td>
+      </tr>""" for g in grades)
+
+    html = f"""<!DOCTYPE html><html><head><meta charset="utf-8">
+<style>
+  *{{margin:0;padding:0;box-sizing:border-box}}
+  body{{font-family:Arial,sans-serif;background:#fff;color:#1a1a2e;font-size:13px;padding:30px}}
+  .hdr{{text-align:center;border-bottom:3px solid #4f46e5;padding-bottom:16px;margin-bottom:22px}}
+  .school{{font-size:24px;font-weight:900;color:#4f46e5;letter-spacing:1px}}
+  .motto{{font-size:12px;color:#6b7280;margin:4px 0 10px}}
+  .rtitle{{display:inline-block;background:#4f46e5;color:#fff;padding:5px 22px;border-radius:20px;font-size:14px;font-weight:700}}
+  .info-grid{{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:18px}}
+  .info-box{{background:#f5f3ff;border-left:4px solid #4f46e5;padding:10px 14px;border-radius:4px}}
+  .il{{font-size:10px;font-weight:700;color:#4f46e5;text-transform:uppercase;letter-spacing:.5px}}
+  .iv{{font-size:14px;font-weight:700;color:#111;margin-top:3px}}
+  table{{width:100%;border-collapse:collapse;margin-bottom:18px}}
+  th{{background:#4f46e5;color:#fff;padding:9px 12px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.4px}}
+  td{{padding:9px 12px;border-bottom:1px solid #f0f0f8}}
+  tr:nth-child(even) td{{background:#fafafe}}
+  .sub{{font-weight:600}}.num{{text-align:center}}.fw{{font-weight:800}}.com{{font-size:11px;color:#6b7280}}
+  .chip{{padding:2px 9px;border-radius:10px;font-size:12px;font-weight:800}}
+  .summary{{background:linear-gradient(135deg,#4f46e5,#7c3aed);color:#fff;padding:16px 20px;border-radius:12px;
+    display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:18px}}
+  .sl{{font-size:10px;opacity:.8;text-transform:uppercase;letter-spacing:.4px}}
+  .sv{{font-size:22px;font-weight:900;margin-top:4px}}
+  .sigs{{display:grid;grid-template-columns:1fr 1fr 1fr;gap:20px;margin-top:24px}}
+  .sig{{text-align:center;padding-top:8px;border-top:1.5px solid #4f46e5;font-size:11px;color:#6b7280}}
+  .footer{{text-align:center;margin-top:20px;font-size:10px;color:#9ca3af;border-top:1px solid #e5e7eb;padding-top:12px}}
+  .conduct{{background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:12px;margin-bottom:14px}}
+  .conduct h4{{font-size:12px;color:#059669;font-weight:700;margin-bottom:6px;text-transform:uppercase}}
+</style>
+</head><body>
+<div class="hdr">
+  <div style="font-size:40px;margin-bottom:6px">🏫</div>
+  <div class="school">{SCHOOL_NAME}</div>
+  <div class="motto">Excellence · Integrity · Service</div>
+  <div class="rtitle">📋 {term} — Academic Report Card {acad_year}</div>
+</div>
+
+<div class="info-grid">
+  <div class="info-box"><div class="il">Student Name</div><div class="iv">{student['full_name']}</div></div>
+  <div class="info-box"><div class="il">Admission No.</div><div class="iv">{student['admission_number']}</div></div>
+  <div class="info-box"><div class="il">Class</div><div class="iv">{cls_name}</div></div>
+  <div class="info-box"><div class="il">Date of Issue</div><div class="iv">{datetime.now().strftime('%d %B %Y')}</div></div>
+</div>
+
+<table>
+  <thead><tr><th>Subject</th><th>Max</th><th>Score</th><th>%</th><th>Grade</th><th>Teacher's Remark</th></tr></thead>
+  <tbody>{rows}</tbody>
+</table>
+
+<div class="summary">
+  <div><div class="sl">Subjects</div><div class="sv">{len(grades)}</div></div>
+  <div><div class="sl">Total Score</div><div class="sv">{int(total)}</div></div>
+  <div><div class="sl">Average</div><div class="sv">{avg:.1f}%</div></div>
+  <div><div class="sl">Overall Grade</div>
+    <div class="sv"><span style="background:rgba(255,255,255,.25);padding:2px 12px;border-radius:10px">{ltr} — {rmk}</span></div>
+  </div>
+</div>
+
+<div class="conduct">
+  <h4>🌟 Conduct &amp; Comments</h4>
+  <p style="font-size:12px;color:#374151">Overall performance: <strong>{rmk}</strong>.
+  {'Excellent work! Keep it up and continue striving for the best.' if ltr == 'A' else
+   'Good performance. With more effort, distinction is achievable.' if ltr == 'B' else
+   'Satisfactory. More dedication and practice will improve results.' if ltr == 'C' else
+   'Needs improvement. Please seek extra help and study regularly.' if ltr == 'D' else
+   'Results are below expectation. Urgent improvement needed. Parents are advised to provide additional support.'}</p>
+</div>
+
+<div class="sigs">
+  <div class="sig">Class Teacher<br><br>__________________</div>
+  <div class="sig">Head Teacher<br><br>__________________</div>
+  <div class="sig">Parent / Guardian<br><br>__________________</div>
+</div>
+
+<div class="footer">
+  This report was generated by {SCHOOL_NAME} School Management System on {datetime.now().strftime('%d %B %Y at %H:%M')}.<br>
+  For enquiries contact the school office.
+</div>
+</body></html>"""
+
+    if HAS_PDF:
+        return WeasyHTML(string=html).write_pdf()
+    return html.encode('utf-8')   # fallback: return HTML
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ROUTES: PAGES
+# ══════════════════════════════════════════════════════════════════════════════
 @app.route('/')
 def index():
     if 'user_id' in session:
