@@ -69,221 +69,226 @@ TWILIO_SID  = os.environ.get('TWILIO_ACCOUNT_SID', '')
 TWILIO_TKN  = os.environ.get('TWILIO_AUTH_TOKEN', '')
 TWILIO_FROM = os.environ.get('TWILIO_FROM_WHATSAPP', 'whatsapp:+14155238886')
 
-# ══════════════════════════════════════════════════════════════════════════════
-# DATABASE
-# ══════════════════════════════════════════════════════════════════════════════
-DB = 'sms.db'
-
-def get_db():
-    if USE_POSTGRES:
-        return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
-    else:
-        c = sqlite3.connect(DB)
-        c.row_factory = sqlite3.Row
-        c.execute("PRAGMA foreign_keys = ON")
-        return c
-
-def q(conn, sql, params=()):
-    if USE_POSTGRES:
-        sql = sql.replace('?', '%s')
-    return conn.execute(sql, params)
-
 def init_db():
     conn = get_db()
     c = conn.cursor()
-
-    c.executescript('''
-    CREATE TABLE IF NOT EXISTS users (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        username TEXT UNIQUE NOT NULL,
-        password BLOB NOT NULL,
-        full_name TEXT NOT NULL,
-        email TEXT,
-        phone TEXT,
-        whatsapp TEXT,
-        role TEXT NOT NULL CHECK(role IN ("admin","teacher")),
-        approved INTEGER DEFAULT 0,
-        subjects_note TEXT,
-        avatar_color TEXT DEFAULT "#4f46e5",
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
-
-    CREATE TABLE IF NOT EXISTS classes (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT NOT NULL,
-        grade_level INTEGER DEFAULT 1,
-        stream TEXT,
-        academic_year TEXT DEFAULT "2025",
-        class_teacher_id INTEGER,
-        FOREIGN KEY(class_teacher_id) REFERENCES users(id)
-    );
-
-    CREATE TABLE IF NOT EXISTS subjects (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT NOT NULL,
-        code TEXT,
-        max_marks INTEGER DEFAULT 100,
-        pass_mark INTEGER DEFAULT 50
-    );
-
-    CREATE TABLE IF NOT EXISTS students (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        admission_number TEXT UNIQUE NOT NULL,
-        full_name TEXT NOT NULL,
-        gender TEXT,
-        date_of_birth TEXT,
-        class_id INTEGER,
-        parent_name TEXT,
-        parent_email TEXT,
-        parent_phone TEXT,
-        parent_whatsapp TEXT,
-        address TEXT,
-        photo_url TEXT,
-        enrolled_date TEXT DEFAULT CURRENT_DATE,
-        active INTEGER DEFAULT 1,
-        FOREIGN KEY(class_id) REFERENCES classes(id)
-    );
-
-    CREATE TABLE IF NOT EXISTS teacher_subjects (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        teacher_id INTEGER NOT NULL,
-        subject_id INTEGER NOT NULL,
-        class_id INTEGER NOT NULL,
-        UNIQUE(teacher_id, subject_id, class_id),
-        FOREIGN KEY(teacher_id) REFERENCES users(id),
-        FOREIGN KEY(subject_id) REFERENCES subjects(id),
-        FOREIGN KEY(class_id) REFERENCES classes(id)
-    );
-
-    CREATE TABLE IF NOT EXISTS grades (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        student_id INTEGER NOT NULL,
-        subject_id INTEGER NOT NULL,
-        teacher_id INTEGER NOT NULL,
-        class_id INTEGER NOT NULL,
-        score REAL,
-        max_score REAL DEFAULT 100,
-        method TEXT DEFAULT "manual",
-        term TEXT NOT NULL,
-        academic_year TEXT DEFAULT "2025",
-        comment TEXT,
-        entered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE(student_id, subject_id, term, academic_year),
-        FOREIGN KEY(student_id) REFERENCES students(id),
-        FOREIGN KEY(subject_id) REFERENCES subjects(id),
-        FOREIGN KEY(teacher_id) REFERENCES users(id),
-        FOREIGN KEY(class_id) REFERENCES classes(id)
-    );
-
-    CREATE TABLE IF NOT EXISTS attendance (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        student_id INTEGER NOT NULL,
-        class_id INTEGER NOT NULL,
-        teacher_id INTEGER NOT NULL,
-        date TEXT NOT NULL,
-        status TEXT NOT NULL CHECK(status IN ("present","absent","late","excused")),
-        note TEXT,
-        UNIQUE(student_id, date),
-        FOREIGN KEY(student_id) REFERENCES students(id)
-    );
-
-    CREATE TABLE IF NOT EXISTS report_deliveries (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        student_id INTEGER NOT NULL,
-        term TEXT NOT NULL,
-        academic_year TEXT DEFAULT "2025",
-        channel TEXT NOT NULL,
-        recipient TEXT,
-        status TEXT DEFAULT "sent",
-        error_msg TEXT,
-        sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY(student_id) REFERENCES students(id)
-    );
-
-    CREATE TABLE IF NOT EXISTS announcements (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        title TEXT NOT NULL,
-        body TEXT NOT NULL,
-        author_id INTEGER,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
-
-    CREATE TABLE IF NOT EXISTS fees (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        student_id INTEGER NOT NULL,
-        academic_year TEXT DEFAULT '2025',
-        term TEXT NOT NULL,
-        amount_due REAL DEFAULT 0,
-        amount_paid REAL DEFAULT 0,
-        due_date TEXT,
-        paid_date TEXT,
-        status TEXT DEFAULT 'unpaid',
-        note TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY(student_id) REFERENCES students(id)
-    );
-
-    CREATE TABLE IF NOT EXISTS homework (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        teacher_id INTEGER NOT NULL,
-        class_id INTEGER NOT NULL,
-        subject_id INTEGER NOT NULL,
-        title TEXT NOT NULL,
-        description TEXT,
-        due_date TEXT,
-        max_marks INTEGER DEFAULT 0,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY(teacher_id) REFERENCES users(id),
-        FOREIGN KEY(class_id) REFERENCES classes(id),
-        FOREIGN KEY(subject_id) REFERENCES subjects(id)
-    );
-
-    CREATE TABLE IF NOT EXISTS homework_submissions (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        homework_id INTEGER NOT NULL,
-        student_id INTEGER NOT NULL,
-        status TEXT DEFAULT 'pending',
-        marks INTEGER,
-        note TEXT,
-        submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE(homework_id, student_id),
-        FOREIGN KEY(homework_id) REFERENCES homework(id),
-        FOREIGN KEY(student_id) REFERENCES students(id)
-    );
-
-    CREATE TABLE IF NOT EXISTS school_settings (
-        key TEXT PRIMARY KEY,
-        value TEXT
-    );
-
-    CREATE TABLE IF NOT EXISTS timetable (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        class_id INTEGER NOT NULL,
-        subject_id INTEGER NOT NULL,
-        teacher_id INTEGER,
-        day_of_week INTEGER NOT NULL CHECK(day_of_week BETWEEN 1 AND 5),
-        period INTEGER NOT NULL CHECK(period BETWEEN 1 AND 10),
-        start_time TEXT NOT NULL,
-        end_time TEXT NOT NULL,
-        room TEXT,
-        academic_year TEXT DEFAULT '2025',
-        UNIQUE(class_id, day_of_week, period, academic_year),
-        FOREIGN KEY(class_id) REFERENCES classes(id),
-        FOREIGN KEY(subject_id) REFERENCES subjects(id),
-        FOREIGN KEY(teacher_id) REFERENCES users(id)
-    );
+    
+    # Create tables - individual statements for PostgreSQL compatibility
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE NOT NULL,
+            password BLOB NOT NULL,
+            full_name TEXT NOT NULL,
+            email TEXT,
+            phone TEXT,
+            whatsapp TEXT,
+            role TEXT NOT NULL CHECK(role IN ("admin","teacher")),
+            approved INTEGER DEFAULT 0,
+            subjects_note TEXT,
+            avatar_color TEXT DEFAULT "#4f46e5",
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS classes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            grade_level INTEGER DEFAULT 1,
+            stream TEXT,
+            academic_year TEXT DEFAULT "2025",
+            class_teacher_id INTEGER,
+            FOREIGN KEY(class_teacher_id) REFERENCES users(id)
+        )
+    ''')
+    
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS subjects (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            code TEXT,
+            max_marks INTEGER DEFAULT 100,
+            pass_mark INTEGER DEFAULT 50
+        )
+    ''')
+    
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS students (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            admission_number TEXT UNIQUE NOT NULL,
+            full_name TEXT NOT NULL,
+            gender TEXT,
+            date_of_birth TEXT,
+            class_id INTEGER,
+            parent_name TEXT,
+            parent_email TEXT,
+            parent_phone TEXT,
+            parent_whatsapp TEXT,
+            address TEXT,
+            photo_url TEXT,
+            enrolled_date TEXT DEFAULT CURRENT_DATE,
+            active INTEGER DEFAULT 1,
+            FOREIGN KEY(class_id) REFERENCES classes(id)
+        )
+    ''')
+    
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS teacher_subjects (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            teacher_id INTEGER NOT NULL,
+            subject_id INTEGER NOT NULL,
+            class_id INTEGER NOT NULL,
+            UNIQUE(teacher_id, subject_id, class_id),
+            FOREIGN KEY(teacher_id) REFERENCES users(id),
+            FOREIGN KEY(subject_id) REFERENCES subjects(id),
+            FOREIGN KEY(class_id) REFERENCES classes(id)
+        )
+    ''')
+    
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS grades (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            student_id INTEGER NOT NULL,
+            subject_id INTEGER NOT NULL,
+            teacher_id INTEGER NOT NULL,
+            class_id INTEGER NOT NULL,
+            score REAL,
+            max_score REAL DEFAULT 100,
+            method TEXT DEFAULT "manual",
+            term TEXT NOT NULL,
+            academic_year TEXT DEFAULT "2025",
+            comment TEXT,
+            entered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(student_id, subject_id, term, academic_year),
+            FOREIGN KEY(student_id) REFERENCES students(id),
+            FOREIGN KEY(subject_id) REFERENCES subjects(id),
+            FOREIGN KEY(teacher_id) REFERENCES users(id),
+            FOREIGN KEY(class_id) REFERENCES classes(id)
+        )
+    ''')
+    
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS attendance (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            student_id INTEGER NOT NULL,
+            class_id INTEGER NOT NULL,
+            teacher_id INTEGER NOT NULL,
+            date TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ("present","absent","late","excused")),
+            note TEXT,
+            UNIQUE(student_id, date),
+            FOREIGN KEY(student_id) REFERENCES students(id)
+        )
+    ''')
+    
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS report_deliveries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            student_id INTEGER NOT NULL,
+            term TEXT NOT NULL,
+            academic_year TEXT DEFAULT "2025",
+            channel TEXT NOT NULL,
+            recipient TEXT,
+            status TEXT DEFAULT "sent",
+            error_msg TEXT,
+            sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(student_id) REFERENCES students(id)
+        )
+    ''')
+    
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS announcements (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT NOT NULL,
+            body TEXT NOT NULL,
+            author_id INTEGER,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS fees (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            student_id INTEGER NOT NULL,
+            academic_year TEXT DEFAULT '2025',
+            term TEXT NOT NULL,
+            amount_due REAL DEFAULT 0,
+            amount_paid REAL DEFAULT 0,
+            due_date TEXT,
+            paid_date TEXT,
+            status TEXT DEFAULT 'unpaid',
+            note TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(student_id) REFERENCES students(id)
+        )
+    ''')
+    
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS homework (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            teacher_id INTEGER NOT NULL,
+            class_id INTEGER NOT NULL,
+            subject_id INTEGER NOT NULL,
+            title TEXT NOT NULL,
+            description TEXT,
+            due_date TEXT,
+            max_marks INTEGER DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(teacher_id) REFERENCES users(id),
+            FOREIGN KEY(class_id) REFERENCES classes(id),
+            FOREIGN KEY(subject_id) REFERENCES subjects(id)
+        )
+    ''')
+    
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS homework_submissions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            homework_id INTEGER NOT NULL,
+            student_id INTEGER NOT NULL,
+            status TEXT DEFAULT 'pending',
+            marks INTEGER,
+            note TEXT,
+            submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(homework_id, student_id),
+            FOREIGN KEY(homework_id) REFERENCES homework(id),
+            FOREIGN KEY(student_id) REFERENCES students(id)
+        )
+    ''')
+    
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS school_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )
+    ''')
+    
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS timetable (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            class_id INTEGER NOT NULL,
+            subject_id INTEGER NOT NULL,
+            teacher_id INTEGER,
+            day_of_week INTEGER NOT NULL CHECK(day_of_week BETWEEN 1 AND 5),
+            period INTEGER NOT NULL CHECK(period BETWEEN 1 AND 10),
+            start_time TEXT NOT NULL,
+            end_time TEXT NOT NULL,
+            room TEXT,
+            academic_year TEXT DEFAULT '2025',
+            UNIQUE(class_id, day_of_week, period, academic_year),
+            FOREIGN KEY(class_id) REFERENCES classes(id),
+            FOREIGN KEY(subject_id) REFERENCES subjects(id),
+            FOREIGN KEY(teacher_id) REFERENCES users(id)
+        )
     ''')
 
     # Seed admin
     pwd = bcrypt.hashpw('Admin@2025'.encode(), bcrypt.gensalt())
-    if USE_POSTGRES:
-        c.execute("SELECT * FROM users WHERE username = 'admin@school.mw'")
-        if not c.fetchone():
-            c.execute("INSERT INTO users (username, password, full_name, email, role, approved, avatar_color) VALUES (%s, %s, %s, %s, %s, %s, %s)",
-                      ('admin@school.mw', pwd.decode(), 'System Administrator', 'admin@school.mw', 'admin', 1, '#4f46e5'))
-    else:
-        c.execute("INSERT OR IGNORE INTO users (username, password, full_name, email, role, approved, avatar_color) VALUES (?,?,?,?,?,?,?)",
+    try:
+        c.execute("INSERT INTO users (username, password, full_name, email, role, approved, avatar_color) VALUES (?, ?, ?, ?, ?, ?, ?)",
                   ('admin@school.mw', pwd, 'System Administrator', 'admin@school.mw', 'admin', 1, '#4f46e5'))
+    except:
+        pass
 
     # Seed subjects
     for name, code, mx in [
@@ -291,12 +296,10 @@ def init_db():
         ('Chichewa','CHICH',100),('Integrated Science','SCI',100),
         ('Social Studies','SOC',100),('Religious Education','RE',100),
         ('Expressive Arts','ARTS',100),('Life Skills','LIFE',100)]:
-        if USE_POSTGRES:
-            c.execute("SELECT * FROM subjects WHERE name = %s", (name,))
-            if not c.fetchone():
-                c.execute("INSERT INTO subjects(name, code, max_marks) VALUES (%s, %s, %s)", (name, code, mx))
-        else:
-            c.execute("INSERT OR IGNORE INTO subjects(name,code,max_marks) VALUES(?,?,?)", (name, code, mx))
+        try:
+            c.execute("INSERT INTO subjects(name, code, max_marks) VALUES(?,?,?)", (name, code, mx))
+        except:
+            pass
 
     # Seed classes
     for name, gl, st in [
@@ -304,12 +307,10 @@ def init_db():
         ('Standard 2 A',2,'A'),('Standard 3 A',3,'A'),
         ('Standard 4 A',4,'A'),('Standard 5 A',5,'A'),
         ('Standard 6 A',6,'A'),('Standard 7 A',7,'A'),('Standard 8 A',8,'A')]:
-        if USE_POSTGRES:
-            c.execute("SELECT * FROM classes WHERE name = %s", (name,))
-            if not c.fetchone():
-                c.execute("INSERT INTO classes(name, grade_level, stream) VALUES (%s, %s, %s)", (name, gl, st))
-        else:
-            c.execute("INSERT OR IGNORE INTO classes(name,grade_level,stream) VALUES(?,?,?)", (name, gl, st))
+        try:
+            c.execute("INSERT INTO classes(name, grade_level, stream) VALUES(?,?,?)", (name, gl, st))
+        except:
+            pass
 
     conn.commit()
     conn.close()
