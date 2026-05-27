@@ -523,7 +523,7 @@ def api_login():
     conn = get_db()
     u = q(conn, "SELECT * FROM users WHERE username=?", (d.get('username',''),)).fetchone()
     conn.close()
-    if u and bcrypt.checkpw(d.get('password','').encode(), u['password']):
+    if u and bcrypt.checkpw(d.get('password','').encode(), u['password'].encode() if isinstance(u['password'], str) else u['password']):
         session.update({'user_id':u['id'],'username':u['username'],
                         'full_name':u['full_name'],'role':u['role'],
                         'approved':bool(u['approved'])})
