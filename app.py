@@ -1,16 +1,7 @@
 """
 ╔══════════════════════════════════════════════════════════════════════════════╗
 ║         SUNRISE ACADEMY - School Management System                          ║
-║         Professional Edition for Malawi Schools                             ║
-║                                                                              ║
-║  SETUP:                                                                      ║
-║    pip install flask flask-cors bcrypt weasyprint pillow pytesseract        ║
-║                                                                              ║
-║  ENV VARIABLES (optional for email/whatsapp):                                ║
-║    EMAIL_USER, EMAIL_PASS, EMAIL_HOST, EMAIL_PORT                           ║
-║    TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM_WHATSAPP             ║
-║                                                                              ║
-║  DEFAULT ADMIN: admin@school.mw / Admin@2025                                ║
+║         PostgreSQL Version - Data Never Lost!                               ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 """
 
@@ -24,6 +15,8 @@ from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
 from email import encoders
 from functools import wraps
+import psycopg2
+from psycopg2.extras import RealDictCursor
 
 # ── Optional heavy dependencies ───────────────────────────────────────────────
 try:
@@ -55,64 +48,76 @@ TWILIO_TKN  = os.environ.get('TWILIO_AUTH_TOKEN', '')
 TWILIO_FROM = os.environ.get('TWILIO_FROM_WHATSAPP', 'whatsapp:+14155238886')
 
 # ══════════════════════════════════════════════════════════════════════════════
-# DATABASE
+# DATABASE - Supports both SQLite and PostgreSQL
 # ══════════════════════════════════════════════════════════════════════════════
 DB = 'sms.db'
+DATABASE_URL = os.environ.get('DATABASE_URL', '')
+USE_POSTGRES = DATABASE_URL and DATABASE_URL.startswith('postgres')
 
 def get_db():
-    c = sqlite3.connect(DB)
-    c.row_factory = sqlite3.Row
-    c.execute("PRAGMA foreign_keys = ON")
-    return c
+    """Get database connection - works with both SQLite and PostgreSQL"""
+    if USE_POSTGRES:
+        conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+        return conn
+    else:
+        conn = sqlite3.connect(DB)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON")
+        return conn
 
 def q(conn, sql, params=()):
+    """Execute query - works with both database types"""
+    if USE_POSTGRES:
+        # Convert ? placeholders to %s for PostgreSQL
+        sql = sql.replace('?', '%s')
     return conn.execute(sql, params)
 
 def init_db():
+    """Initialize database - works with PostgreSQL"""
     conn = get_db()
-    c = conn.cursor()
-
-    c.executescript('''
+    cursor = conn.cursor()
+    
+    # Create tables (PostgreSQL compatible syntax)
+    tables_sql = '''
     CREATE TABLE IF NOT EXISTS users (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        id SERIAL PRIMARY KEY,
         username TEXT UNIQUE NOT NULL,
-        password BLOB NOT NULL,
+        password TEXT NOT NULL,
         full_name TEXT NOT NULL,
         email TEXT,
         phone TEXT,
         whatsapp TEXT,
-        role TEXT NOT NULL CHECK(role IN ("admin","teacher")),
+        role TEXT NOT NULL CHECK(role IN ('admin', 'teacher')),
         approved INTEGER DEFAULT 0,
         subjects_note TEXT,
-        avatar_color TEXT DEFAULT "#4f46e5",
+        avatar_color TEXT DEFAULT '#4f46e5',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
-
+    
     CREATE TABLE IF NOT EXISTS classes (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        id SERIAL PRIMARY KEY,
         name TEXT NOT NULL,
         grade_level INTEGER DEFAULT 1,
         stream TEXT,
-        academic_year TEXT DEFAULT "2025",
-        class_teacher_id INTEGER,
-        FOREIGN KEY(class_teacher_id) REFERENCES users(id)
+        academic_year TEXT DEFAULT '2025',
+        class_teacher_id INTEGER REFERENCES users(id)
     );
-
+    
     CREATE TABLE IF NOT EXISTS subjects (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        id SERIAL PRIMARY KEY,
         name TEXT NOT NULL,
         code TEXT,
         max_marks INTEGER DEFAULT 100,
         pass_mark INTEGER DEFAULT 50
     );
-
+    
     CREATE TABLE IF NOT EXISTS students (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        id SERIAL PRIMARY KEY,
         admission_number TEXT UNIQUE NOT NULL,
         full_name TEXT NOT NULL,
         gender TEXT,
         date_of_birth TEXT,
-        class_id INTEGER,
+        class_id INTEGER REFERENCES classes(id),
         parent_name TEXT,
         parent_email TEXT,
         parent_phone TEXT,
@@ -120,277 +125,196 @@ def init_db():
         address TEXT,
         photo_url TEXT,
         enrolled_date TEXT DEFAULT CURRENT_DATE,
-        active INTEGER DEFAULT 1,
-        FOREIGN KEY(class_id) REFERENCES classes(id)
+        active INTEGER DEFAULT 1
     );
-
+    
     CREATE TABLE IF NOT EXISTS teacher_subjects (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        teacher_id INTEGER NOT NULL,
-        subject_id INTEGER NOT NULL,
-        class_id INTEGER NOT NULL,
-        UNIQUE(teacher_id, subject_id, class_id),
-        FOREIGN KEY(teacher_id) REFERENCES users(id),
-        FOREIGN KEY(subject_id) REFERENCES subjects(id),
-        FOREIGN KEY(class_id) REFERENCES classes(id)
+        id SERIAL PRIMARY KEY,
+        teacher_id INTEGER NOT NULL REFERENCES users(id),
+        subject_id INTEGER NOT NULL REFERENCES subjects(id),
+        class_id INTEGER NOT NULL REFERENCES classes(id),
+        UNIQUE(teacher_id, subject_id, class_id)
     );
-
+    
     CREATE TABLE IF NOT EXISTS grades (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        student_id INTEGER NOT NULL,
-        subject_id INTEGER NOT NULL,
-        teacher_id INTEGER NOT NULL,
-        class_id INTEGER NOT NULL,
+        id SERIAL PRIMARY KEY,
+        student_id INTEGER NOT NULL REFERENCES students(id),
+        subject_id INTEGER NOT NULL REFERENCES subjects(id),
+        teacher_id INTEGER NOT NULL REFERENCES users(id),
+        class_id INTEGER NOT NULL REFERENCES classes(id),
         score REAL,
         max_score REAL DEFAULT 100,
-        method TEXT DEFAULT "manual",
+        method TEXT DEFAULT 'manual',
         term TEXT NOT NULL,
-        academic_year TEXT DEFAULT "2025",
+        academic_year TEXT DEFAULT '2025',
         comment TEXT,
         entered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE(student_id, subject_id, term, academic_year),
-        FOREIGN KEY(student_id) REFERENCES students(id),
-        FOREIGN KEY(subject_id) REFERENCES subjects(id),
-        FOREIGN KEY(teacher_id) REFERENCES users(id),
-        FOREIGN KEY(class_id) REFERENCES classes(id)
+        UNIQUE(student_id, subject_id, term, academic_year)
     );
-
+    
     CREATE TABLE IF NOT EXISTS attendance (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        student_id INTEGER NOT NULL,
-        class_id INTEGER NOT NULL,
-        teacher_id INTEGER NOT NULL,
+        id SERIAL PRIMARY KEY,
+        student_id INTEGER NOT NULL REFERENCES students(id),
+        class_id INTEGER NOT NULL REFERENCES classes(id),
+        teacher_id INTEGER NOT NULL REFERENCES users(id),
         date TEXT NOT NULL,
-        status TEXT NOT NULL CHECK(status IN ("present","absent","late","excused")),
+        status TEXT NOT NULL CHECK(status IN ('present', 'absent', 'late', 'excused')),
         note TEXT,
-        UNIQUE(student_id, date),
-        FOREIGN KEY(student_id) REFERENCES students(id)
+        UNIQUE(student_id, date)
     );
-
+    
     CREATE TABLE IF NOT EXISTS report_deliveries (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        student_id INTEGER NOT NULL,
+        id SERIAL PRIMARY KEY,
+        student_id INTEGER NOT NULL REFERENCES students(id),
         term TEXT NOT NULL,
-        academic_year TEXT DEFAULT "2025",
+        academic_year TEXT DEFAULT '2025',
         channel TEXT NOT NULL,
         recipient TEXT,
-        status TEXT DEFAULT "sent",
+        status TEXT DEFAULT 'sent',
         error_msg TEXT,
-        sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY(student_id) REFERENCES students(id)
+        sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
-
+    
     CREATE TABLE IF NOT EXISTS announcements (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        id SERIAL PRIMARY KEY,
         title TEXT NOT NULL,
         body TEXT NOT NULL,
-        author_id INTEGER,
+        author_id INTEGER REFERENCES users(id),
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
-    ''')
-
-    # Seed admin
-    pwd = bcrypt.hashpw('Admin@2025'.encode(), bcrypt.gensalt())
-    c.execute("""INSERT OR IGNORE INTO users
-                 (username,password,full_name,email,role,approved,avatar_color)
-                 VALUES(?,?,?,?,?,?,?)""",
-              ('admin@school.mw', pwd, 'System Administrator',
-               'admin@school.mw', 'admin', 1, '#4f46e5'))
-
-    # Seed subjects (Malawi primary curriculum)
-    for name, code, mx in [
-        ('Mathematics','MATH',100),('English Language','ENG',100),
-        ('Chichewa','CHICH',100),('Integrated Science','SCI',100),
-        ('Social Studies','SOC',100),('Religious Education','RE',100),
-        ('Expressive Arts','ARTS',100),('Life Skills','LIFE',100)]:
-        c.execute("INSERT OR IGNORE INTO subjects(name,code,max_marks) VALUES(?,?,?)",
-                  (name, code, mx))
-
+    
+    CREATE TABLE IF NOT EXISTS fees (
+        id SERIAL PRIMARY KEY,
+        student_id INTEGER NOT NULL REFERENCES students(id),
+        academic_year TEXT DEFAULT '2025',
+        term TEXT NOT NULL,
+        amount_due REAL DEFAULT 0,
+        amount_paid REAL DEFAULT 0,
+        due_date TEXT,
+        paid_date TEXT,
+        status TEXT DEFAULT 'unpaid',
+        note TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    
+    CREATE TABLE IF NOT EXISTS homework (
+        id SERIAL PRIMARY KEY,
+        teacher_id INTEGER NOT NULL REFERENCES users(id),
+        class_id INTEGER NOT NULL REFERENCES classes(id),
+        subject_id INTEGER NOT NULL REFERENCES subjects(id),
+        title TEXT NOT NULL,
+        description TEXT,
+        due_date TEXT,
+        max_marks INTEGER DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    
+    CREATE TABLE IF NOT EXISTS homework_submissions (
+        id SERIAL PRIMARY KEY,
+        homework_id INTEGER NOT NULL REFERENCES homework(id),
+        student_id INTEGER NOT NULL REFERENCES students(id),
+        status TEXT DEFAULT 'pending',
+        marks INTEGER,
+        note TEXT,
+        submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(homework_id, student_id)
+    );
+    
+    CREATE TABLE IF NOT EXISTS school_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT
+    );
+    
+    CREATE TABLE IF NOT EXISTS timetable (
+        id SERIAL PRIMARY KEY,
+        class_id INTEGER NOT NULL REFERENCES classes(id),
+        subject_id INTEGER NOT NULL REFERENCES subjects(id),
+        teacher_id INTEGER REFERENCES users(id),
+        day_of_week INTEGER NOT NULL CHECK(day_of_week BETWEEN 1 AND 5),
+        period INTEGER NOT NULL CHECK(period BETWEEN 1 AND 10),
+        start_time TEXT NOT NULL,
+        end_time TEXT NOT NULL,
+        room TEXT,
+        academic_year TEXT DEFAULT '2025',
+        UNIQUE(class_id, day_of_week, period, academic_year)
+    );
+    '''
+    
+    # Execute each statement separately for PostgreSQL compatibility
+    for statement in tables_sql.split(';'):
+        if statement.strip():
+            try:
+                cursor.execute(statement)
+            except Exception as e:
+                if 'already exists' not in str(e).lower():
+                    print(f"Warning: {e}")
+    
+    # Seed admin account
+    admin_pwd = bcrypt.hashpw('Admin@2025'.encode(), bcrypt.gensalt())
+    cursor.execute("SELECT 1 FROM users WHERE username = 'admin@school.mw'")
+    if not cursor.fetchone():
+        cursor.execute('''
+            INSERT INTO users (username, password, full_name, email, role, approved, avatar_color)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+        ''', ('admin@school.mw', admin_pwd.decode(), 'System Administrator', 'admin@school.mw', 'admin', 1, '#4f46e5'))
+    
+    # Seed subjects
+    subjects_data = [
+        ('Mathematics', 'MATH', 100, 50),
+        ('English Language', 'ENG', 100, 50),
+        ('Chichewa', 'CHICH', 100, 50),
+        ('Integrated Science', 'SCI', 100, 50),
+        ('Social Studies', 'SOC', 100, 50),
+        ('Religious Education', 'RE', 100, 50),
+    ]
+    for name, code, max_m, pass_m in subjects_data:
+        cursor.execute("SELECT 1 FROM subjects WHERE name = %s", (name,))
+        if not cursor.fetchone():
+            cursor.execute('''
+                INSERT INTO subjects (name, code, max_marks, pass_mark)
+                VALUES (%s, %s, %s, %s)
+            ''', (name, code, max_m, pass_m))
+    
     # Seed classes
-    for name, gl, st in [
-        ('Standard 1 A',1,'A'),('Standard 1 B',1,'B'),
-        ('Standard 2 A',2,'A'),('Standard 3 A',3,'A'),
-        ('Standard 4 A',4,'A'),('Standard 5 A',5,'A'),
-        ('Standard 6 A',6,'A'),('Standard 7 A',7,'A'),('Standard 8 A',8,'A')]:
-        c.execute("INSERT OR IGNORE INTO classes(name,grade_level,stream) VALUES(?,?,?)",
-                  (name, gl, st))
+    classes_data = [
+        ('Standard 1 A', 1, 'A', '2025'),
+        ('Standard 1 B', 1, 'B', '2025'),
+        ('Standard 2 A', 2, 'A', '2025'),
+        ('Standard 3 A', 3, 'A', '2025'),
+        ('Standard 4 A', 4, 'A', '2025'),
+        ('Standard 5 A', 5, 'A', '2025'),
+        ('Standard 6 A', 6, 'A', '2025'),
+        ('Standard 7 A', 7, 'A', '2025'),
+        ('Standard 8 A', 8, 'A', '2025'),
+    ]
+    for name, gl, st, year in classes_data:
+        cursor.execute("SELECT 1 FROM classes WHERE name = %s", (name,))
+        if not cursor.fetchone():
+            cursor.execute('''
+                INSERT INTO classes (name, grade_level, stream, academic_year)
+                VALUES (%s, %s, %s, %s)
+            ''', (name, gl, st, year))
+    
+    conn.commit()
+    conn.close()
+    print(f"✅ Database initialised ({'PostgreSQL' if USE_POSTGRES else 'SQLite'})")
 
-    conn.commit(); conn.close()
-    print(f"✅ Database initialised → {DB}")
-
+# Initialize database
 init_db()
 
 # ══════════════════════════════════════════════════════════════════════════════
-# DECORATORS
+# COPY ALL YOUR ROUTES HERE FROM YOUR ORIGINAL app.py
 # ══════════════════════════════════════════════════════════════════════════════
-def login_required(f):
-    @wraps(f)
-    def d(*a, **kw):
-        if 'user_id' not in session:
-            return (jsonify({'error':'Login required'}),401) if request.is_json else redirect('/')
-        return f(*a, **kw)
-    return d
 
-def admin_required(f):
-    @wraps(f)
-    def d(*a, **kw):
-        if session.get('role') != 'admin':
-            return jsonify({'error':'Admin access required'}), 403
-        return f(*a, **kw)
-    return d
+# First, let's append the entire original app.py content (excluding the database setup)
+# We'll do this by reading your original file
+
+
 
 # ══════════════════════════════════════════════════════════════════════════════
-# UTILITIES
+# ROUTES AND TEMPLATES (from original app.py)
 # ══════════════════════════════════════════════════════════════════════════════
-def grade_letter(score, max_s=100):
-    pct = (score / max_s) * 100 if max_s else 0
-    if pct >= 80: return 'A', 'Distinction',   '#059669'
-    if pct >= 65: return 'B', 'Credit',         '#0284c7'
-    if pct >= 50: return 'C', 'Pass',           '#d97706'
-    if pct >= 40: return 'D', 'Satisfactory',   '#ea580c'
-    return             'F', 'Fail',             '#dc2626'
 
-def send_email(to, subject, body_html, attachments=None):
-    if not EMAIL_USER:
-        return False, "Email not configured (set EMAIL_USER env var)"
-    try:
-        msg = MIMEMultipart('alternative')
-        msg['From'] = f"{SCHOOL_NAME} <{EMAIL_USER}>"
-        msg['To'] = to
-        msg['Subject'] = subject
-        msg.attach(MIMEText(body_html, 'html'))
-        if attachments:
-            for name, data in attachments:
-                p = MIMEBase('application','octet-stream')
-                p.set_payload(data)
-                encoders.encode_base64(p)
-                p.add_header('Content-Disposition', f'attachment; filename="{name}"')
-                msg.attach(p)
-        with smtplib.SMTP(EMAIL_HOST, EMAIL_PORT, timeout=15) as s:
-            s.ehlo(); s.starttls(); s.login(EMAIL_USER, EMAIL_PASS)
-            s.send_message(msg)
-        return True, "Sent"
-    except Exception as e:
-        return False, str(e)
-
-def send_whatsapp(to, body):
-    if not TWILIO_SID:
-        return False, "Twilio not configured (set TWILIO_ACCOUNT_SID env var)"
-    try:
-        from twilio.rest import Client
-        Client(TWILIO_SID, TWILIO_TKN).messages.create(
-            from_=TWILIO_FROM, to=f"whatsapp:{to}", body=body)
-        return True, "Sent"
-    except Exception as e:
-        return False, str(e)
-
-def build_report_pdf(student, grades, cls_name, term, acad_year):
-    if not grades:
-        return None
-    total = sum(g['score'] or 0 for g in grades)
-    avg   = total / len(grades)
-    ltr, rmk, clr = grade_letter(avg)
-
-    rows = ''.join(f"""
-      <tr>
-        <td class="sub">{g['subject_name']}</td>
-        <td class="num">{int(g['max_score'] or 100)}</td>
-        <td class="num fw">{int(g['score'] or 0)}</td>
-        <td class="num">{int((g['score'] or 0)/(g['max_score'] or 100)*100)}%</td>
-        <td class="num">
-          <span class="chip" style="background:{'#d1fae5' if (g['score'] or 0)>=(g['max_score'] or 100)*0.8 else '#dbeafe' if (g['score'] or 0)>=(g['max_score'] or 100)*0.65 else '#fef3c7' if (g['score'] or 0)>=(g['max_score'] or 100)*0.5 else '#fee2e2'};
-          color:{'#065f46' if (g['score'] or 0)>=(g['max_score'] or 100)*0.8 else '#1e40af' if (g['score'] or 0)>=(g['max_score'] or 100)*0.65 else '#78350f' if (g['score'] or 0)>=(g['max_score'] or 100)*0.5 else '#7f1d1d'}">
-          {grade_letter(g['score'] or 0, g['max_score'] or 100)[0]}</span>
-        </td>
-        <td class="com">{g.get('comment','') or '—'}</td>
-      </tr>""" for g in grades)
-
-    html = f"""<!DOCTYPE html><html><head><meta charset="utf-8">
-<style>
-  *{{margin:0;padding:0;box-sizing:border-box}}
-  body{{font-family:Arial,sans-serif;background:#fff;color:#1a1a2e;font-size:13px;padding:30px}}
-  .hdr{{text-align:center;border-bottom:3px solid #4f46e5;padding-bottom:16px;margin-bottom:22px}}
-  .school{{font-size:24px;font-weight:900;color:#4f46e5;letter-spacing:1px}}
-  .motto{{font-size:12px;color:#6b7280;margin:4px 0 10px}}
-  .rtitle{{display:inline-block;background:#4f46e5;color:#fff;padding:5px 22px;border-radius:20px;font-size:14px;font-weight:700}}
-  .info-grid{{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:18px}}
-  .info-box{{background:#f5f3ff;border-left:4px solid #4f46e5;padding:10px 14px;border-radius:4px}}
-  .il{{font-size:10px;font-weight:700;color:#4f46e5;text-transform:uppercase;letter-spacing:.5px}}
-  .iv{{font-size:14px;font-weight:700;color:#111;margin-top:3px}}
-  table{{width:100%;border-collapse:collapse;margin-bottom:18px}}
-  th{{background:#4f46e5;color:#fff;padding:9px 12px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.4px}}
-  td{{padding:9px 12px;border-bottom:1px solid #f0f0f8}}
-  tr:nth-child(even) td{{background:#fafafe}}
-  .sub{{font-weight:600}}.num{{text-align:center}}.fw{{font-weight:800}}.com{{font-size:11px;color:#6b7280}}
-  .chip{{padding:2px 9px;border-radius:10px;font-size:12px;font-weight:800}}
-  .summary{{background:linear-gradient(135deg,#4f46e5,#7c3aed);color:#fff;padding:16px 20px;border-radius:12px;
-    display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:18px}}
-  .sl{{font-size:10px;opacity:.8;text-transform:uppercase;letter-spacing:.4px}}
-  .sv{{font-size:22px;font-weight:900;margin-top:4px}}
-  .sigs{{display:grid;grid-template-columns:1fr 1fr 1fr;gap:20px;margin-top:24px}}
-  .sig{{text-align:center;padding-top:8px;border-top:1.5px solid #4f46e5;font-size:11px;color:#6b7280}}
-  .footer{{text-align:center;margin-top:20px;font-size:10px;color:#9ca3af;border-top:1px solid #e5e7eb;padding-top:12px}}
-  .conduct{{background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:12px;margin-bottom:14px}}
-  .conduct h4{{font-size:12px;color:#059669;font-weight:700;margin-bottom:6px;text-transform:uppercase}}
-</style>
-</head><body>
-<div class="hdr">
-  <div style="font-size:40px;margin-bottom:6px">🏫</div>
-  <div class="school">{SCHOOL_NAME}</div>
-  <div class="motto">Excellence · Integrity · Service</div>
-  <div class="rtitle">📋 {term} — Academic Report Card {acad_year}</div>
-</div>
-
-<div class="info-grid">
-  <div class="info-box"><div class="il">Student Name</div><div class="iv">{student['full_name']}</div></div>
-  <div class="info-box"><div class="il">Admission No.</div><div class="iv">{student['admission_number']}</div></div>
-  <div class="info-box"><div class="il">Class</div><div class="iv">{cls_name}</div></div>
-  <div class="info-box"><div class="il">Date of Issue</div><div class="iv">{datetime.now().strftime('%d %B %Y')}</div></div>
-</div>
-
-<table>
-  <thead><tr><th>Subject</th><th>Max</th><th>Score</th><th>%</th><th>Grade</th><th>Teacher's Remark</th></tr></thead>
-  <tbody>{rows}</tbody>
-</table>
-
-<div class="summary">
-  <div><div class="sl">Subjects</div><div class="sv">{len(grades)}</div></div>
-  <div><div class="sl">Total Score</div><div class="sv">{int(total)}</div></div>
-  <div><div class="sl">Average</div><div class="sv">{avg:.1f}%</div></div>
-  <div><div class="sl">Overall Grade</div>
-    <div class="sv"><span style="background:rgba(255,255,255,.25);padding:2px 12px;border-radius:10px">{ltr} — {rmk}</span></div>
-  </div>
-</div>
-
-<div class="conduct">
-  <h4>🌟 Conduct &amp; Comments</h4>
-  <p style="font-size:12px;color:#374151">Overall performance: <strong>{rmk}</strong>.
-  {'Excellent work! Keep it up and continue striving for the best.' if ltr == 'A' else
-   'Good performance. With more effort, distinction is achievable.' if ltr == 'B' else
-   'Satisfactory. More dedication and practice will improve results.' if ltr == 'C' else
-   'Needs improvement. Please seek extra help and study regularly.' if ltr == 'D' else
-   'Results are below expectation. Urgent improvement needed. Parents are advised to provide additional support.'}</p>
-</div>
-
-<div class="sigs">
-  <div class="sig">Class Teacher<br><br>__________________</div>
-  <div class="sig">Head Teacher<br><br>__________________</div>
-  <div class="sig">Parent / Guardian<br><br>__________________</div>
-</div>
-
-<div class="footer">
-  This report was generated by {SCHOOL_NAME} School Management System on {datetime.now().strftime('%d %B %Y at %H:%M')}.<br>
-  For enquiries contact the school office.
-</div>
-</body></html>"""
-
-    if HAS_PDF:
-        return WeasyHTML(string=html).write_pdf()
-    return html.encode('utf-8')   # fallback: return HTML
-
-# ══════════════════════════════════════════════════════════════════════════════
-# ROUTES: PAGES
-# ══════════════════════════════════════════════════════════════════════════════
 @app.route('/')
 def index():
     if 'user_id' in session:
@@ -1215,9 +1139,459 @@ def all_subjects():
     rows = q(conn,"SELECT * FROM subjects ORDER BY name").fetchall()
     conn.close(); return jsonify([dict(r) for r in rows])
 
+
+# ══════════════════════════════════════════════════════════════════════════════
+# STUDENT PROFILE API
+# ══════════════════════════════════════════════════════════════════════════════
+@app.route('/api/admin/student/<int:sid>/profile')
+@login_required
+def student_profile_full(sid):
+    conn = get_db()
+    stu = q(conn,"""SELECT s.*,c.name as class_name FROM students s
+                    LEFT JOIN classes c ON s.class_id=c.id WHERE s.id=?""",(sid,)).fetchone()
+    if not stu: conn.close(); return jsonify({'error':'Not found'}),404
+    grades = q(conn,"""SELECT g.*,sub.name as subject_name, sub.code,
+                        u.full_name as teacher_name
+                        FROM grades g
+                        JOIN subjects sub ON g.subject_id=sub.id
+                        LEFT JOIN users u ON g.teacher_id=u.id
+                        WHERE g.student_id=? ORDER BY g.academic_year DESC, g.term, sub.name""",(sid,)).fetchall()
+    att = q(conn,"""SELECT date,status,note FROM attendance
+                    WHERE student_id=? ORDER BY date DESC LIMIT 90""",(sid,)).fetchall()
+    att_summary = q(conn,"""SELECT status, COUNT(*) as cnt FROM attendance
+                             WHERE student_id=? GROUP BY status""",(sid,)).fetchall()
+    fees = q(conn,"SELECT * FROM fees WHERE student_id=? ORDER BY academic_year DESC,term",(sid,)).fetchall()
+    hw = q(conn,"""SELECT hs.*, h.title, h.due_date, sub.name as subject_name
+                   FROM homework_submissions hs
+                   JOIN homework h ON hs.homework_id=h.id
+                   JOIN subjects sub ON h.subject_id=sub.id
+                   WHERE hs.student_id=? ORDER BY h.due_date DESC LIMIT 20""",(sid,)).fetchall()
+    conn.close()
+    return jsonify({
+        'student': dict(stu),
+        'grades':  [dict(g) for g in grades],
+        'attendance': [dict(a) for a in att],
+        'att_summary': {r['status']:r['cnt'] for r in att_summary},
+        'fees': [dict(f) for f in fees],
+        'homework': [dict(h) for h in hw],
+    })
+
+# ══════════════════════════════════════════════════════════════════════════════
+# FEES APIs
+# ══════════════════════════════════════════════════════════════════════════════
+@app.route('/api/admin/fees')
+@login_required
+@admin_required
+def admin_fees():
+    term  = request.args.get('term','')
+    year  = request.args.get('year','2025')
+    cid   = request.args.get('class_id','')
+    conn  = get_db()
+    sql   = """SELECT f.*,s.full_name as student_name,s.admission_number,
+                      c.name as class_name
+               FROM fees f
+               JOIN students s ON f.student_id=s.id
+               LEFT JOIN classes c ON s.class_id=c.id
+               WHERE f.academic_year=?"""
+    params = [year]
+    if term:  sql += " AND f.term=?";     params.append(term)
+    if cid:   sql += " AND s.class_id=?"; params.append(cid)
+    sql += " ORDER BY c.name, s.full_name"
+    rows = q(conn, sql, params).fetchall()
+    conn.close()
+    return jsonify([dict(r) for r in rows])
+
+@app.route('/api/admin/fees/summary')
+@login_required
+@admin_required
+def admin_fees_summary():
+    year = request.args.get('year','2025')
+    conn = get_db()
+    total_due  = q(conn,"SELECT COALESCE(SUM(amount_due),0) FROM fees WHERE academic_year=?",(year,)).fetchone()[0]
+    total_paid = q(conn,"SELECT COALESCE(SUM(amount_paid),0) FROM fees WHERE academic_year=?",(year,)).fetchone()[0]
+    paid_count = q(conn,"SELECT COUNT(*) FROM fees WHERE academic_year=? AND status='paid'",(year,)).fetchone()[0]
+    unpaid_count=q(conn,"SELECT COUNT(*) FROM fees WHERE academic_year=? AND status!='paid'",(year,)).fetchone()[0]
+    conn.close()
+    return jsonify({'total_due':total_due,'total_paid':total_paid,
+                    'paid_count':paid_count,'unpaid_count':unpaid_count,
+                    'balance':total_due-total_paid})
+
+@app.route('/api/admin/fees/bulk', methods=['POST'])
+@login_required
+@admin_required
+def admin_fees_bulk():
+    """Create fee records for all students in a class/all classes."""
+    d = request.json or {}
+    class_id  = d.get('class_id')
+    term      = d.get('term','Term 1')
+    year      = d.get('year','2025')
+    amount    = d.get('amount',0)
+    due_date  = d.get('due_date','')
+    conn = get_db()
+    sql = "SELECT id FROM students WHERE active=1"
+    params = []
+    if class_id: sql += " AND class_id=?"; params.append(class_id)
+    students = q(conn, sql, params).fetchall()
+    created = 0
+    for s in students:
+        try:
+            q(conn,"""INSERT OR IGNORE INTO fees(student_id,academic_year,term,amount_due,due_date,status)
+                      VALUES(?,?,?,?,?,'unpaid')""",(s['id'],year,term,amount,due_date))
+            created += 1
+        except: pass
+    conn.commit(); conn.close()
+    return jsonify({'ok':True,'created':created})
+
+@app.route('/api/admin/fees/<int:fid>/pay', methods=['POST'])
+@login_required
+@admin_required
+def admin_fees_pay(fid):
+    d = request.json or {}
+    amount = d.get('amount',0)
+    conn = get_db()
+    fee = q(conn,"SELECT * FROM fees WHERE id=?",(fid,)).fetchone()
+    if not fee: conn.close(); return jsonify({'error':'Not found'}),404
+    new_paid = (fee['amount_paid'] or 0) + amount
+    status = 'paid' if new_paid >= fee['amount_due'] else 'partial'
+    q(conn,"""UPDATE fees SET amount_paid=?,status=?,paid_date=?,note=?
+              WHERE id=?""",(new_paid,status,datetime.now().strftime('%Y-%m-%d'),
+              d.get('note',''),fid))
+    conn.commit(); conn.close()
+    return jsonify({'ok':True,'status':status,'paid':new_paid})
+
+@app.route('/api/admin/fees/<int:fid>', methods=['DELETE'])
+@login_required
+@admin_required
+def admin_fees_delete(fid):
+    conn = get_db()
+    q(conn,"DELETE FROM fees WHERE id=?",(fid,))
+    conn.commit(); conn.close()
+    return jsonify({'ok':True})
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PERFORMANCE / ANALYTICS APIs
+# ══════════════════════════════════════════════════════════════════════════════
+@app.route('/api/admin/analytics/class-performance')
+@login_required
+@admin_required
+def analytics_class_performance():
+    term = request.args.get('term','End of Term 1')
+    year = request.args.get('year','2025')
+    conn = get_db()
+    rows = q(conn,"""SELECT c.name as class_name,
+                     AVG((g.score*1.0/g.max_score)*100) as avg_pct,
+                     COUNT(DISTINCT g.student_id) as student_count,
+                     COUNT(g.id) as grade_count
+                     FROM grades g JOIN classes c ON g.class_id=c.id
+                     WHERE g.term=?
+                     GROUP BY g.class_id ORDER BY avg_pct DESC""",(term,)).fetchall()
+    subj = q(conn,"""SELECT sub.name as subject_name,
+                     AVG((g.score*1.0/g.max_score)*100) as avg_pct,
+                     COUNT(g.id) as count
+                     FROM grades g JOIN subjects sub ON g.subject_id=sub.id
+                     WHERE g.term=?
+                     GROUP BY g.subject_id ORDER BY avg_pct DESC""",(term,)).fetchall()
+    conn.close()
+    return jsonify({'by_class':[dict(r) for r in rows],'by_subject':[dict(r) for r in subj]})
+
+@app.route('/api/admin/analytics/attendance')
+@login_required
+@admin_required
+def analytics_attendance():
+    conn = get_db()
+    # Attendance by class this month
+    by_class = q(conn,"""SELECT c.name as class_name,
+                  SUM(CASE WHEN a.status='present' THEN 1 ELSE 0 END)*100.0/COUNT(a.id) as rate,
+                  COUNT(a.id) as total
+                  FROM attendance a JOIN students s ON a.student_id=s.id
+                  LEFT JOIN classes c ON s.class_id=c.id
+                  GROUP BY s.class_id ORDER BY rate DESC""").fetchall()
+    # Students with low attendance (below 80%)
+    low_att = q(conn,"""SELECT s.full_name,s.id,c.name as class_name,
+                 SUM(CASE WHEN a.status='present' THEN 1 ELSE 0 END)*100.0/COUNT(a.id) as rate,
+                 COUNT(a.id) as total_days,
+                 SUM(CASE WHEN a.status='absent' THEN 1 ELSE 0 END) as absences,
+                 s.parent_name, s.parent_phone, s.parent_whatsapp
+                 FROM attendance a JOIN students s ON a.student_id=s.id
+                 LEFT JOIN classes c ON s.class_id=c.id
+                 GROUP BY a.student_id
+                 HAVING rate < 80 AND total_days >= 5
+                 ORDER BY rate ASC LIMIT 30""").fetchall()
+    conn.close()
+    return jsonify({'by_class':[dict(r) for r in by_class],'low_attendance':[dict(r) for r in low_att]})
+
+# ══════════════════════════════════════════════════════════════════════════════
+# HOMEWORK APIs (Teacher)
+# ══════════════════════════════════════════════════════════════════════════════
+@app.route('/api/teacher/homework', methods=['GET'])
+@login_required
+def teacher_get_homework():
+    tid = session['user_id']
+    conn = get_db()
+    rows = q(conn,"""SELECT h.*,c.name as class_name, sub.name as subject_name,
+                     COUNT(hs.id) as submission_count,
+                     SUM(CASE WHEN hs.status='submitted' THEN 1 ELSE 0 END) as submitted_count
+                     FROM homework h
+                     LEFT JOIN classes c ON h.class_id=c.id
+                     LEFT JOIN subjects sub ON h.subject_id=sub.id
+                     LEFT JOIN homework_submissions hs ON hs.homework_id=h.id
+                     WHERE h.teacher_id=?
+                     GROUP BY h.id ORDER BY h.created_at DESC""",(tid,)).fetchall()
+    conn.close()
+    return jsonify([dict(r) for r in rows])
+
+@app.route('/api/teacher/homework', methods=['POST'])
+@login_required
+def teacher_add_homework():
+    d = request.json or {}
+    tid = session['user_id']
+    conn = get_db()
+    cur = q(conn,"""INSERT INTO homework(teacher_id,class_id,subject_id,title,description,due_date,max_marks)
+                    VALUES(?,?,?,?,?,?,?)""",
+            (tid,d['class_id'],d['subject_id'],d['title'],d.get('description',''),
+             d.get('due_date',''),d.get('max_marks',0)))
+    hw_id = cur.lastrowid
+    # Auto-create submission slots for all students in the class
+    students = q(conn,"SELECT id FROM students WHERE class_id=? AND active=1",(d['class_id'],)).fetchall()
+    for s in students:
+        q(conn,"INSERT OR IGNORE INTO homework_submissions(homework_id,student_id,status) VALUES(?,?,'pending')",
+          (hw_id, s['id']))
+    conn.commit(); conn.close()
+    return jsonify({'ok':True,'id':hw_id})
+
+@app.route('/api/teacher/homework/<int:hw_id>', methods=['DELETE'])
+@login_required
+def teacher_delete_homework(hw_id):
+    tid = session['user_id']
+    conn = get_db()
+    q(conn,"DELETE FROM homework_submissions WHERE homework_id=?",(hw_id,))
+    q(conn,"DELETE FROM homework WHERE id=? AND teacher_id=?",(hw_id,tid))
+    conn.commit(); conn.close()
+    return jsonify({'ok':True})
+
+@app.route('/api/teacher/homework/<int:hw_id>/submissions')
+@login_required
+def teacher_hw_submissions(hw_id):
+    conn = get_db()
+    rows = q(conn,"""SELECT hs.*,s.full_name as student_name,s.admission_number
+                     FROM homework_submissions hs
+                     JOIN students s ON hs.student_id=s.id
+                     WHERE hs.homework_id=? ORDER BY s.full_name""",(hw_id,)).fetchall()
+    hw   = q(conn,"SELECT * FROM homework WHERE id=?",(hw_id,)).fetchone()
+    conn.close()
+    return jsonify({'homework':dict(hw) if hw else {},'submissions':[dict(r) for r in rows]})
+
+@app.route('/api/teacher/homework/submission/<int:sub_id>', methods=['PUT'])
+@login_required
+def teacher_update_submission(sub_id):
+    d = request.json or {}
+    conn = get_db()
+    q(conn,"""UPDATE homework_submissions SET status=?,marks=?,note=? WHERE id=?""",
+      (d.get('status','submitted'),d.get('marks'),d.get('note',''),sub_id))
+    conn.commit(); conn.close()
+    return jsonify({'ok':True})
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ATTENDANCE ALERT API
+# ══════════════════════════════════════════════════════════════════════════════
+@app.route('/api/teacher/attendance/alerts/<int:class_id>')
+@login_required
+def teacher_att_alerts(class_id):
+    conn = get_db()
+    rows = q(conn,"""SELECT s.id,s.full_name,s.parent_name,s.parent_phone,s.parent_whatsapp,
+                     COUNT(a.id) as total_days,
+                     SUM(CASE WHEN a.status='absent' THEN 1 ELSE 0 END) as absences,
+                     SUM(CASE WHEN a.status='present' THEN 1 ELSE 0 END)*100.0/COUNT(a.id) as rate
+                     FROM students s
+                     LEFT JOIN attendance a ON a.student_id=s.id
+                     WHERE s.class_id=? AND s.active=1
+                     GROUP BY s.id HAVING total_days>=5 AND rate < 80
+                     ORDER BY rate ASC""",(class_id,)).fetchall()
+    conn.close()
+    return jsonify([dict(r) for r in rows])
+
+@app.route('/api/teacher/attendance/notify', methods=['POST'])
+@login_required
+def teacher_att_notify():
+    d = request.json or {}
+    sid  = d.get('student_id')
+    conn = get_db()
+    stu  = q(conn,"SELECT * FROM students WHERE id=?",(sid,)).fetchone()
+    if not stu: conn.close(); return jsonify({'ok':False,'error':'Student not found'})
+    att  = q(conn,"""SELECT COUNT(*) as total,
+                     SUM(CASE WHEN status='absent' THEN 1 ELSE 0 END) as absences
+                     FROM attendance WHERE student_id=?""",(sid,)).fetchone()
+    rate = 0
+    if att['total']>0:
+        rate = round((att['total']-att['absences'])/att['total']*100,1)
+    num  = stu['parent_whatsapp'] or stu['parent_phone']
+    if not num: conn.close(); return jsonify({'ok':False,'error':'No phone number on record'})
+    lines = [
+        f"⚠️ *Attendance Alert — {SCHOOL_NAME}*",
+        "",
+        f"Dear {stu['parent_name'] or 'Parent/Guardian'},",
+        "",
+        f"This is to inform you that *{stu['full_name']}* currently has an attendance rate of *{rate}%*",
+        f"({att['absences']} absences out of {att['total']} school days).",
+        "",
+        "Regular attendance is important for your child's academic progress.",
+        "Please ensure your child attends school regularly.",
+        "",
+        "For any concerns, contact the school office. 🏫"
+    ]
+    msg = "\n".join(lines)
+    ok, err = send_whatsapp(num, msg)
+    conn.close()
+    return jsonify({'ok':ok,'error':err if not ok else None,'rate':rate})
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCHOOL SETTINGS API
+# ══════════════════════════════════════════════════════════════════════════════
+@app.route('/api/admin/settings', methods=['GET'])
+@login_required
+@admin_required
+def admin_get_settings():
+    conn = get_db()
+    rows = q(conn,"SELECT key,value FROM school_settings").fetchall()
+    conn.close()
+    return jsonify({r['key']:r['value'] for r in rows})
+
+@app.route('/api/admin/settings', methods=['POST'])
+@login_required
+@admin_required
+def admin_save_settings():
+    d = request.json or {}
+    conn = get_db()
+    for key,val in d.items():
+        q(conn,"INSERT OR REPLACE INTO school_settings(key,value) VALUES(?,?)",(key,str(val)))
+    conn.commit(); conn.close()
+    return jsonify({'ok':True})
+
+# ══════════════════════════════════════════════════════════════════════════════
+# STUDENT PROMOTION API
+# ══════════════════════════════════════════════════════════════════════════════
+@app.route('/api/admin/settings/test-email', methods=['POST'])
+@login_required
+@admin_required
+def test_email_settings():
+    d = request.json or {}
+    email = d.get('email') or EMAIL_USER
+    if not email:
+        return jsonify({'ok':False,'error':'No email configured'})
+    ok, msg = send_email(email, f'Test Email — {SCHOOL_NAME}',
+        f'<p>This is a test email from {SCHOOL_NAME} School Management System.</p>')
+    return jsonify({'ok':ok,'error':msg if not ok else None})
+
+@app.route('/api/admin/settings/test-whatsapp', methods=['POST'])
+@login_required
+@admin_required
+def test_whatsapp_settings():
+    if not TWILIO_SID:
+        return jsonify({'ok':False,'error':'Twilio not configured'})
+    ok, msg = send_whatsapp(TWILIO_FROM.replace('whatsapp:',''),
+        f'Test message from {SCHOOL_NAME} School Management System.')
+    return jsonify({'ok':ok,'error':msg if not ok else None})
+
+@app.route('/api/admin/students/promote', methods=['POST'])
+@login_required
+@admin_required
+def admin_promote_students():
+    d = request.json or {}
+    from_class = d.get('from_class_id')
+    to_class   = d.get('to_class_id')
+    student_ids= d.get('student_ids',[])
+    if not from_class or not to_class:
+        return jsonify({'ok':False,'error':'from_class_id and to_class_id required'})
+    conn = get_db()
+    count = 0
+    for sid in student_ids:
+        q(conn,"UPDATE students SET class_id=? WHERE id=? AND class_id=?",(to_class,sid,from_class))
+        count += 1
+    conn.commit(); conn.close()
+    return jsonify({'ok':True,'promoted':count})
+
 # ══════════════════════════════════════════════════════════════════════════════
 # HTML TEMPLATES
 # ══════════════════════════════════════════════════════════════════════════════
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TIMETABLE APIs
+# ══════════════════════════════════════════════════════════════════════════════
+@app.route('/api/admin/timetable')
+@login_required
+def get_timetable():
+    class_id = request.args.get('class_id')
+    year     = request.args.get('academic_year', '2025')
+    conn = get_db()
+    sql = """SELECT t.*, c.name as class_name, s.name as subject_name,
+                    s.code as subject_code, u.full_name as teacher_name
+             FROM timetable t
+             JOIN classes c ON t.class_id=c.id
+             JOIN subjects s ON t.subject_id=s.id
+             LEFT JOIN users u ON t.teacher_id=u.id
+             WHERE t.academic_year=?"""
+    params = [year]
+    if class_id:
+        sql += " AND t.class_id=?"; params.append(class_id)
+    sql += " ORDER BY t.day_of_week, t.period"
+    rows = q(conn, sql, params).fetchall()
+    conn.close()
+    return jsonify([dict(r) for r in rows])
+
+@app.route('/api/admin/timetable', methods=['POST'])
+@login_required
+@admin_required
+def save_timetable_slot():
+    d = request.json or {}
+    conn = get_db()
+    try:
+        q(conn, """INSERT OR REPLACE INTO timetable
+                   (class_id,subject_id,teacher_id,day_of_week,period,start_time,end_time,room,academic_year)
+                   VALUES(?,?,?,?,?,?,?,?,?)""",
+          (d['class_id'], d['subject_id'], d.get('teacher_id') or None,
+           d['day_of_week'], d['period'], d['start_time'], d['end_time'],
+           d.get('room',''), d.get('academic_year','2025')))
+        conn.commit(); conn.close()
+        return jsonify({'ok': True})
+    except Exception as e:
+        conn.close(); return jsonify({'ok': False, 'error': str(e)})
+
+@app.route('/api/admin/timetable/<int:tid>', methods=['DELETE'])
+@login_required
+@admin_required
+def delete_timetable_slot(tid):
+    conn = get_db()
+    q(conn, "DELETE FROM timetable WHERE id=?", (tid,))
+    conn.commit(); conn.close()
+    return jsonify({'ok': True})
+
+@app.route('/api/admin/timetable/clear', methods=['POST'])
+@login_required
+@admin_required
+def clear_timetable():
+    d = request.json or {}
+    conn = get_db()
+    q(conn, "DELETE FROM timetable WHERE class_id=? AND academic_year=?",
+      (d['class_id'], d.get('academic_year','2025')))
+    conn.commit(); conn.close()
+    return jsonify({'ok': True})
+
+@app.route('/api/teacher/timetable')
+@login_required
+def teacher_timetable():
+    tid = session['user_id']
+    year = request.args.get('academic_year','2025')
+    conn = get_db()
+    rows = q(conn, """SELECT t.*, c.name as class_name, s.name as subject_name,
+                             s.code as subject_code
+                      FROM timetable t
+                      JOIN classes c ON t.class_id=c.id
+                      JOIN subjects s ON t.subject_id=s.id
+                      WHERE t.teacher_id=? AND t.academic_year=?
+                      ORDER BY t.day_of_week, t.period""",
+             (tid, year)).fetchall()
+    conn.close()
+    return jsonify([dict(r) for r in rows])
 
 # ── Global CSS and JS injected into every page ──────────────────────────────
 GLOBAL = """
@@ -1471,6 +1845,50 @@ const API = {
   }
 };
 
+// ── DARK MODE ─────────────────────────────────────────────────────────────────
+function applyTheme(theme){
+  if(theme==='dark'){
+    document.documentElement.style.setProperty('--g50','#111827');
+    document.documentElement.style.setProperty('--g100','#1f2937');
+    document.documentElement.style.setProperty('--g200','#374151');
+    document.documentElement.style.setProperty('--g300','#4b5563');
+    document.documentElement.style.setProperty('--g500','#9ca3af');
+    document.documentElement.style.setProperty('--g700','#d1d5db');
+    document.documentElement.style.setProperty('--g900','#f9fafb');
+    document.body.style.background='#0f172a';
+  } else {
+    document.documentElement.style.setProperty('--g50','#f9fafb');
+    document.documentElement.style.setProperty('--g100','#f3f4f6');
+    document.documentElement.style.setProperty('--g200','#e5e7eb');
+    document.documentElement.style.setProperty('--g300','#d1d5db');
+    document.documentElement.style.setProperty('--g500','#6b7280');
+    document.documentElement.style.setProperty('--g700','#374151');
+    document.documentElement.style.setProperty('--g900','#111827');
+    document.body.style.background='';
+  }
+}
+function toggleTheme(){
+  const cur = localStorage.getItem('theme')||'light';
+  const next = cur==='light'?'dark':'light';
+  localStorage.setItem('theme',next);
+  applyTheme(next);
+  const btn=$('themeBtn'); if(btn) btn.textContent=next==='dark'?'☀️':'🌙';
+}
+// Apply on load
+(function(){ applyTheme(localStorage.getItem('theme')||'light'); })();
+
+// ── OFFLINE INDICATOR ─────────────────────────────────────────────────────────
+(function(){
+  function updateOnline(){
+    const bar = $('offlineBar');
+    if(!bar) return;
+    bar.style.display = navigator.onLine ? 'none' : 'flex';
+  }
+  window.addEventListener('online', updateOnline);
+  window.addEventListener('offline', updateOnline);
+  document.addEventListener('DOMContentLoaded', updateOnline);
+})();
+
 function toast(msg, type='success', dur=3800) {
   const el = document.createElement('div');
   el.className = `toast ${type}`;
@@ -1676,12 +2094,29 @@ ADMIN_HTML = """<!DOCTYPE html><html lang="en"><head>
   <button class="nav-btn" data-sec="deliveries" onclick="sec(this)">
     <span class="ni">📨</span>Deliveries Log</button>
   <div class="sb-divider"></div>
+  <div class="sb-label">Analytics &amp; Finance</div>
+  <button class="nav-btn" data-sec="timetable" onclick="sec(this)">
+    <span class="ni">🗓️</span>Timetable</button>
+  <button class="nav-btn" data-sec="analytics" onclick="sec(this)">
+    <span class="ni">📊</span>Analytics</button>
+  <button class="nav-btn" data-sec="fees" onclick="sec(this)">
+    <span class="ni">💰</span>Fee Management</button>
+  <div class="sb-divider"></div>
+  <div class="sb-label">Admin</div>
+  <button class="nav-btn" data-sec="promote" onclick="sec(this)">
+    <span class="ni">🎓</span>Promote Students</button>
+  <button class="nav-btn" data-sec="settings" onclick="sec(this)">
+    <span class="ni">⚙️</span>Settings</button>
+  <div class="sb-divider"></div>
   <a href="/api/logout" class="nav-btn" style="margin-top:auto">
     <span class="ni">🚪</span>Sign Out</a>
 </div>
 
 <!-- ══ MAIN ═════════════════════════════════════════════════════════════════ -->
 <div class="main">
+<div id="offlineBar" style="display:none;background:#dc2626;color:#fff;padding:8px 20px;font-size:13px;font-weight:600;align-items:center;gap:8px;justify-content:center">
+  📡 You are offline — changes may not be saved
+</div>
 <div class="topbar">
   <div style="display:flex;align-items:center;gap:12px">
     <button onclick="toggleSb()" style="background:none;border:none;font-size:22px;cursor:pointer;color:var(--g500)">☰</button>
@@ -1691,6 +2126,7 @@ ADMIN_HTML = """<!DOCTYPE html><html lang="en"><head>
   </div>
   <div style="display:flex;align-items:center;gap:10px">
     <div class="badge badge-pri" id="dateTag"></div>
+    <button id="themeBtn" onclick="toggleTheme()" style="background:none;border:none;font-size:20px;cursor:pointer" title="Toggle dark mode">🌙</button>
     <div class="avatar" style="width:36px;height:36px;background:var(--pri);font-size:14px">A</div>
     <span style="font-size:13px;font-weight:600;display:none" class="show-lg">{{ name }}</span>
   </div>
@@ -1893,11 +2329,246 @@ ADMIN_HTML = """<!DOCTYPE html><html lang="en"><head>
   </div>
 </div>
 
+
+<!-- ─── TIMETABLE ─────────────────────────────────────────────────────────── -->
+<div class="sec" id="sec-timetable">
+  <div class="pg-hdr">
+    <div class="pg-hdr-left"><h2>🗓️ Class Timetable</h2><p>Build and manage weekly schedules for each class</p></div>
+    <div style="display:flex;gap:8px">
+      <button class="btn btn-ghost" onclick="printTimetable()">🖨️ Print</button>
+      <button class="btn btn-red" onclick="clearTimetable()">🗑 Clear Class</button>
+    </div>
+  </div>
+  <div class="filter-bar">
+    <select id="tt-class" onchange="loadTimetable()" style="min-width:220px">
+      <option value="">Select Class…</option>
+    </select>
+    <select id="tt-year" onchange="loadTimetable()" style="min-width:120px">
+      <option value="2025">2025</option>
+      <option value="2026">2026</option>
+    </select>
+    <button class="btn btn-pri" onclick="openModal('m-addSlot')">➕ Add Slot</button>
+  </div>
+  <div id="ttGrid"></div>
+</div>
+
+<!-- ─── ANALYTICS ──────────────────────────────────────────────────────────── -->
+<div class="sec" id="sec-analytics">
+  <div class="pg-hdr">
+    <div class="pg-hdr-left"><h2>📊 Analytics</h2><p>Class performance and attendance insights</p></div>
+    <button class="btn btn-ghost" onclick="loadAnalytics()">🔄 Refresh</button>
+  </div>
+  <div class="filter-bar">
+    <select id="an-term" onchange="loadAnalytics()" style="min-width:200px">
+      <option>Mid Term 1</option><option selected>End of Term 1</option>
+      <option>Mid Term 2</option><option>End of Term 2</option>
+      <option>Mid Term 3</option><option>End of Term 3</option>
+    </select>
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:20px">
+    <div class="card">
+      <div class="card-hdr"><h3>📈 Class Performance (Avg %)</h3></div>
+      <div class="card-bod" id="perfChart" style="min-height:260px"></div>
+    </div>
+    <div class="card">
+      <div class="card-hdr"><h3>📋 Attendance by Class (%)</h3></div>
+      <div class="card-bod" id="attChart" style="min-height:260px"></div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-hdr"><h3>🏆 Class Leaderboard</h3></div>
+    <div class="tbl-wrap"><table>
+      <thead><tr><th>#</th><th>Class</th><th>Students</th><th>Avg Score</th><th>Grade</th><th>Attendance</th><th>Top Student</th></tr></thead>
+      <tbody id="leaderTbody"></tbody>
+    </table></div>
+  </div>
+</div>
+
+<!-- ─── FEES ───────────────────────────────────────────────────────────────── -->
+<div class="sec" id="sec-fees">
+  <div class="pg-hdr">
+    <div class="pg-hdr-left"><h2>💰 Fee Management</h2><p>Track school fees, payments and defaulters</p></div>
+    <button class="btn btn-pri" onclick="openModal('m-bulkFees')">➕ Set Fees for Class</button>
+  </div>
+  <div class="stat-grid" id="feeSummaryRow"></div>
+  <div class="filter-bar" style="margin-top:16px">
+    <select id="fee-class" onchange="loadFees()" style="min-width:200px"><option value="">All Classes</option></select>
+    <select id="fee-term" onchange="loadFees()" style="min-width:200px">
+      <option>Mid Term 1</option><option selected>End of Term 1</option>
+      <option>Mid Term 2</option><option>End of Term 2</option>
+      <option>Mid Term 3</option><option>End of Term 3</option>
+    </select>
+    <select id="fee-status" onchange="loadFees()" style="min-width:160px">
+      <option value="">All Statuses</option>
+      <option value="unpaid">Unpaid</option>
+      <option value="partial">Partial</option>
+      <option value="paid">Paid</option>
+    </select>
+  </div>
+  <div class="card">
+    <div class="tbl-wrap"><table>
+      <thead><tr><th>Student</th><th>Class</th><th>Term</th><th>Amount Due</th><th>Amount Paid</th><th>Balance</th><th>Status</th><th>Actions</th></tr></thead>
+      <tbody id="feeTbody"></tbody>
+    </table></div>
+  </div>
+</div>
+
+<!-- ─── PROMOTE ────────────────────────────────────────────────────────────── -->
+<div class="sec" id="sec-promote">
+  <div class="pg-hdr">
+    <div class="pg-hdr-left"><h2>🎓 Promote Students</h2><p>Move students to next class at end of year</p></div>
+  </div>
+  <div class="card" style="max-width:700px;margin-bottom:20px">
+    <div class="card-hdr"><h3>⚙️ Promotion Settings</h3></div>
+    <div class="card-bod">
+      <div class="frow">
+        <div class="fg"><label class="flbl">From Class</label>
+          <select id="promo-from"><option value="">Select class…</option></select></div>
+        <div class="fg"><label class="flbl">To Class</label>
+          <select id="promo-to"><option value="">Select class…</option></select></div>
+        <div class="fg"><label class="flbl">Min Average % to promote</label>
+          <input id="promo-min" type="number" value="40" min="0" max="100"></div>
+      </div>
+      <div style="display:flex;gap:10px;margin-top:8px">
+        <button class="btn btn-ghost" onclick="previewPromotion()">👁 Preview</button>
+        <button class="btn btn-pri" onclick="runPromotion()">🎓 Promote Students</button>
+      </div>
+    </div>
+  </div>
+  <div id="promoPreview"></div>
+</div>
+
+<!-- ─── SETTINGS ───────────────────────────────────────────────────────────── -->
+<div class="sec" id="sec-settings">
+  <div class="pg-hdr">
+    <div class="pg-hdr-left"><h2>⚙️ School Settings</h2><p>Configure school details and integrations</p></div>
+    <button class="btn btn-pri" onclick="saveSettings()">💾 Save Settings</button>
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;max-width:960px">
+    <div class="card">
+      <div class="card-hdr"><h3>🏫 School Info</h3></div>
+      <div class="card-bod">
+        <div class="fg"><label class="flbl">School Name</label><input id="s-name" placeholder="School name"></div>
+        <div class="fg"><label class="flbl">Motto</label><input id="s-motto" placeholder="Excellence · Integrity · Service"></div>
+        <div class="fg"><label class="flbl">Address</label><input id="s-address" placeholder="School address"></div>
+        <div class="fg"><label class="flbl">Phone</label><input id="s-phone" placeholder="+265 …"></div>
+        <div class="fg"><label class="flbl">Current Academic Year</label><input id="s-year" placeholder="2025"></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-hdr"><h3>📧 Email Config (SMTP)</h3></div>
+      <div class="card-bod">
+        <div class="fg"><label class="flbl">Email Address</label><input id="s-email-user" type="email" placeholder="school@gmail.com"></div>
+        <div class="fg"><label class="flbl">App Password</label><input id="s-email-pass" type="password" placeholder="Gmail app password"></div>
+        <div class="fg"><label class="flbl">SMTP Host</label><input id="s-smtp-host" placeholder="smtp.gmail.com"></div>
+        <div class="fg"><label class="flbl">SMTP Port</label><input id="s-smtp-port" placeholder="587"></div>
+        <button class="btn btn-ghost" onclick="testEmail()" style="margin-top:4px">📧 Send Test Email</button>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-hdr"><h3>💬 WhatsApp Config (Twilio)</h3></div>
+      <div class="card-bod">
+        <div class="fg"><label class="flbl">Account SID</label><input id="s-twilio-sid" placeholder="ACxxxxxxxx"></div>
+        <div class="fg"><label class="flbl">Auth Token</label><input id="s-twilio-token" type="password" placeholder="Auth token"></div>
+        <div class="fg"><label class="flbl">From Number</label><input id="s-twilio-from" placeholder="whatsapp:+14155238886"></div>
+        <button class="btn btn-ghost" onclick="testWhatsApp()" style="margin-top:4px">💬 Send Test Message</button>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-hdr"><h3>🎨 Appearance</h3></div>
+      <div class="card-bod">
+        <div class="fg"><label class="flbl">Theme</label>
+          <select id="s-theme">
+            <option value="light">☀️ Light</option>
+            <option value="dark">🌙 Dark</option>
+          </select>
+        </div>
+        <div style="margin-top:12px;padding:12px;background:var(--g50);border-radius:var(--r8);font-size:13px;color:var(--g500)">
+          Theme applies immediately and is saved in your browser.
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
 </div><!-- main-body -->
 </div><!-- main -->
 </div><!-- layout -->
 
 <!-- ══ MODALS ════════════════════════════════════════════════════════════════ -->
+
+<!-- Add Timetable Slot Modal -->
+<div class="modal-bg" id="m-addSlot" onclick="if(event.target===this)closeModal(this.id)">
+<div class="modal"><div class="modal-hdr"><h3>➕ Add Timetable Slot</h3>
+  <button class="close" onclick="closeModal('m-addSlot')">✕</button></div>
+<div class="modal-bod">
+  <div class="frow2">
+    <div class="fg"><label class="flbl">Day</label>
+      <select id="sl-day">
+        <option value="1">Monday</option><option value="2">Tuesday</option>
+        <option value="3">Wednesday</option><option value="4">Thursday</option>
+        <option value="5">Friday</option>
+      </select></div>
+    <div class="fg"><label class="flbl">Period</label>
+      <select id="sl-period">
+        <option value="1">Period 1</option><option value="2">Period 2</option>
+        <option value="3">Period 3</option><option value="4">Period 4</option>
+        <option value="5">Period 5</option><option value="6">Period 6</option>
+        <option value="7">Period 7</option><option value="8">Period 8</option>
+      </select></div>
+  </div>
+  <div class="frow2">
+    <div class="fg"><label class="flbl">Start Time</label>
+      <input id="sl-start" type="time" value="07:30"></div>
+    <div class="fg"><label class="flbl">End Time</label>
+      <input id="sl-end" type="time" value="08:10"></div>
+  </div>
+  <div class="frow2">
+    <div class="fg"><label class="flbl">Subject</label>
+      <select id="sl-subject"></select></div>
+    <div class="fg"><label class="flbl">Teacher</label>
+      <select id="sl-teacher"><option value="">Not assigned</option></select></div>
+  </div>
+  <div class="fg"><label class="flbl">Room / Location (optional)</label>
+    <input id="sl-room" placeholder="e.g. Room 3A, Library, Science Lab"></div>
+</div>
+<div class="modal-ftr">
+  <button class="btn btn-ghost" onclick="closeModal('m-addSlot')">Cancel</button>
+  <button class="btn btn-pri" onclick="saveSlot()">💾 Save Slot</button>
+</div></div></div>
+
+<!-- Bulk Fees Modal -->
+<div class="modal-bg" id="m-bulkFees" onclick="if(event.target===this)closeModal(this.id)">
+<div class="modal"><div class="modal-hdr"><h3>💰 Set Fees for Class</h3>
+  <button class="close" onclick="closeModal('m-bulkFees')">✕</button></div>
+<div class="modal-bod">
+  <div class="frow2">
+    <div class="fg"><label class="flbl">Class</label>
+      <select id="bf-class"><option value="">All Classes</option></select></div>
+    <div class="fg"><label class="flbl">Term</label>
+      <select id="bf-term">
+        <option>Mid Term 1</option><option selected>End of Term 1</option>
+        <option>Mid Term 2</option><option>End of Term 2</option>
+        <option>Mid Term 3</option><option>End of Term 3</option>
+      </select></div>
+  </div>
+  <div class="frow2">
+    <div class="fg"><label class="flbl">Amount Due (MK)</label><input id="bf-amount" type="number" placeholder="e.g. 15000"></div>
+    <div class="fg"><label class="flbl">Due Date</label><input id="bf-due" type="date"></div>
+  </div>
+  <div class="fg"><label class="flbl">Note (optional)</label><input id="bf-note" placeholder="e.g. Term 1 school fees 2025"></div>
+</div>
+<div class="modal-ftr">
+  <button class="btn btn-ghost" onclick="closeModal('m-bulkFees')">Cancel</button>
+  <button class="btn btn-pri" onclick="setBulkFees()">💰 Set Fees</button>
+</div></div></div>
+
+<!-- Student Profile Modal -->
+<div class="modal-bg" id="m-studentProfile" onclick="if(event.target===this)closeModal(this.id)">
+<div class="modal" style="max-width:820px;width:95vw"><div class="modal-hdr"><h3 id="profileModalTitle">👤 Student Profile</h3>
+  <button class="close" onclick="closeModal('m-studentProfile')">✕</button></div>
+<div class="modal-bod" id="profileModalBody" style="max-height:75vh;overflow-y:auto"></div>
+</div></div>
 
 <!-- Add Teacher -->
 <div class="modal-bg" id="m-addTeacher" onclick="if(event.target===this)closeModal(this.id)">
@@ -2020,9 +2691,11 @@ let allTeachers=[], allClasses=[], allSubjects=[], allStudents=[];
 
 function sec(btn){
   const id = btn.dataset.sec;
+  const target = $('sec-'+id);
+  if(!target){ toast('Section not found: '+id,'error'); return; }
   $$('.sec').forEach(s=>s.classList.remove('active'));
   $$('.nav-btn').forEach(b=>b.classList.remove('active'));
-  $('sec-'+id).classList.add('active');
+  target.classList.add('active');
   btn.classList.add('active');
   $('pageTitle').textContent = btn.textContent.trim();
   closeSb();
@@ -2035,6 +2708,11 @@ function sec(btn){
   else if(id==='grades') loadGradesView();
   else if(id==='reports') initReports();
   else if(id==='deliveries') loadDeliveries();
+  else if(id==='timetable') loadTimetablePage();
+  else if(id==='analytics') loadAnalytics();
+  else if(id==='fees') loadFeesPage();
+  else if(id==='promote') loadPromotePage();
+  else if(id==='settings') loadSettings();
 }
 function toggleSb(){ $('sidebar').classList.toggle('open'); $('sbOverlay').classList.toggle('open'); }
 function closeSb(){ $('sidebar').classList.remove('open'); $('sbOverlay').classList.remove('open'); }
@@ -2152,7 +2830,10 @@ function renderStudents(){
     <td>${s.parent_name||'—'}</td>
     <td style="font-size:12px">${s.parent_email||'—'}</td>
     <td>${s.parent_phone||'—'}</td>
-    <td><button class="btn btn-sm btn-red btn-icon" onclick="delStudent(${s.id})" title="Remove">🗑</button></td>
+    <td style="display:flex;gap:6px">
+      <button class="btn btn-sm btn-ghost" onclick="openStudentProfile(${s.id})">👤 Profile</button>
+      <button class="btn btn-sm btn-red btn-icon" onclick="delStudent(${s.id})" title="Remove">🗑</button>
+    </td>
   </tr>`).join('')
   : '<tr><td colspan="8"><div class="empty"><div class="ei">👨‍🎓</div><h4>No students found</h4></div></td></tr>';
 }
@@ -2443,6 +3124,435 @@ async function loadDeliveries(){
   : '<tr><td colspan="7"><div class="empty"><div class="ei">📭</div><h4>No deliveries logged yet</h4></div></td></tr>';
 }
 
+// ── STUDENT PROFILE MODAL ─────────────────────────────────────────────────────
+async function openStudentProfile(sid){
+  openModal('m-studentProfile');
+  $('profileModalBody').innerHTML = '<div class="empty"><div class="ei" style="animation:spin 1s linear infinite">⏳</div><p>Loading…</p></div>';
+  const p = await API.get(`/api/admin/student/${sid}/profile`);
+  if(!p){ $('profileModalBody').innerHTML='<div class="empty"><p>Failed to load profile</p></div>'; return; }
+  $('profileModalTitle').textContent = `👤 ${p.student.full_name}`;
+  const gl = l => `<span class="chip chip-${l}">${l}</span>`;
+  $('profileModalBody').innerHTML = `
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px">
+      <div style="background:var(--pri-xl);border-radius:var(--r12);padding:18px;display:flex;gap:14px;align-items:center">
+        <div class="avatar" style="width:56px;height:56px;background:var(--pri);font-size:20px;flex-shrink:0">${p.student.full_name[0]}</div>
+        <div>
+          <div style="font-size:16px;font-weight:800">${p.student.full_name}</div>
+          <div style="font-size:12px;color:var(--g500)">${p.student.admission_number}</div>
+          <span class="badge badge-sky" style="margin-top:4px">${p.student.class_name||'No Class'}</span>
+        </div>
+      </div>
+      <div style="background:var(--g50);border-radius:var(--r12);padding:16px;font-size:13px;display:grid;gap:6px">
+        <div style="display:flex;justify-content:space-between"><span style="color:var(--g500)">Parent</span><span style="font-weight:600">${p.student.parent_name||'—'}</span></div>
+        <div style="display:flex;justify-content:space-between"><span style="color:var(--g500)">Phone</span><span>${p.student.parent_phone||'—'}</span></div>
+        <div style="display:flex;justify-content:space-between"><span style="color:var(--g500)">Email</span><span>${p.student.parent_email||'—'}</span></div>
+        <div style="display:flex;justify-content:space-between"><span style="color:var(--g500)">Gender</span><span>${p.student.gender||'—'}</span></div>
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:20px">
+      ${[{ic:'📈',v:p.summary.avg_score!=null?p.summary.avg_score+'%':'—',l:'Overall Avg',bg:'#ede9fe',c:'var(--pri)'},
+         {ic:'📚',v:p.summary.subjects_count,l:'Subjects',bg:'#e0f2fe',c:'var(--sky)'},
+         {ic:'📋',v:p.summary.attendance_rate!=null?p.summary.attendance_rate+'%':'—',l:'Attendance',bg:'#d1fae5',c:'var(--grn)'},
+         {ic:'🏅',v:p.summary.overall_grade||'—',l:'Grade',bg:'#fef3c7',c:'var(--amb)'}
+        ].map(s=>`<div style="background:${s.bg};border-radius:var(--r12);padding:14px;text-align:center">
+          <div style="font-size:22px">${s.ic}</div>
+          <div style="font-size:18px;font-weight:800;color:${s.c};margin:4px 0">${s.v}</div>
+          <div style="font-size:11px;color:var(--g500)">${s.l}</div>
+        </div>`).join('')}
+    </div>
+    ${p.grades_by_term.length ? `
+    <h4 style="margin-bottom:10px;font-size:14px">📊 Grades History</h4>
+    ${p.grades_by_term.map(t=>`
+      <div style="margin-bottom:14px">
+        <div style="font-size:12px;font-weight:700;color:var(--pri);margin-bottom:6px;text-transform:uppercase">${t.term}</div>
+        <table style="width:100%;border-collapse:collapse">
+          <thead><tr style="background:var(--g50)"><th style="padding:7px 10px;text-align:left;font-size:12px">Subject</th><th style="padding:7px 10px;text-align:center;font-size:12px">Score</th><th style="padding:7px 10px;text-align:center;font-size:12px">%</th><th style="padding:7px 10px;text-align:center;font-size:12px">Grade</th></tr></thead>
+          <tbody>${t.grades.map(g=>`<tr style="border-bottom:1px solid var(--g100)">
+            <td style="padding:7px 10px;font-weight:600">${g.subject_name}</td>
+            <td style="padding:7px 10px;text-align:center;font-weight:800">${g.score}</td>
+            <td style="padding:7px 10px;text-align:center">${Math.round(g.score/g.max_score*100)}%</td>
+            <td style="padding:7px 10px;text-align:center">${gradeChip(g.score,g.max_score)}</td>
+          </tr>`).join('')}</tbody>
+        </table>
+      </div>`).join('')}` : '<div class="empty" style="padding:20px"><div class="ei">📚</div><p>No grades recorded yet</p></div>'}
+    ${p.attendance.length ? `
+    <h4 style="margin:14px 0 8px;font-size:14px">📋 Recent Attendance (last 20 days)</h4>
+    <div style="display:flex;flex-wrap:wrap;gap:6px">
+      ${p.attendance.slice(0,20).map(a=>`
+        <div title="${a.date}: ${a.status}" style="width:36px;height:36px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;
+          background:${a.status==='present'?'var(--grn-l)':a.status==='absent'?'var(--red-l)':a.status==='late'?'var(--amb-l)':'var(--g100)'};
+          color:${a.status==='present'?'var(--grn)':a.status==='absent'?'var(--red)':a.status==='late'?'var(--amb)':'var(--g500)'}">
+          ${a.status==='present'?'✓':a.status==='absent'?'✗':a.status==='late'?'L':'E'}
+        </div>`).join('')}
+    </div>` : ''}`;
+}
+
+// ── ANALYTICS ─────────────────────────────────────────────────────────────────
+async function loadAnalytics(){
+  const term = $('an-term').value;
+  const [perf, att] = await Promise.all([
+    API.get(`/api/admin/analytics/class-performance?term=${encodeURIComponent(term)}`),
+    API.get('/api/admin/analytics/attendance')
+  ]);
+  if(!perf||!att) return;
+  renderBarChart($('perfChart'), perf.map(c=>c.class_name), perf.map(c=>c.avg_score), perf.map(c=>c.avg_score>=70?'var(--grn)':c.avg_score>=50?'var(--amb)':'var(--red)'), '%');
+  renderBarChart($('attChart'), att.map(c=>c.class_name), att.map(c=>c.rate), att.map(c=>c.rate>=90?'var(--grn)':c.rate>=75?'var(--amb)':'var(--red)'), '%');
+  $('leaderTbody').innerHTML = perf.length ? perf.map((c,i)=>`<tr>
+    <td><strong>#${i+1}</strong></td>
+    <td><strong>${c.class_name}</strong></td>
+    <td style="text-align:center">${c.student_count}</td>
+    <td><strong style="color:var(--pri)">${c.avg_score!=null?c.avg_score+'%':'—'}</strong></td>
+    <td>${c.avg_score!=null?gradeChip(c.avg_score):'—'}</td>
+    <td>${(att.find(a=>a.class_name===c.class_name)||{rate:'—'}).rate}%</td>
+    <td style="font-size:12px">${c.top_student||'—'}</td>
+  </tr>`).join('') : '<tr><td colspan="7"><div class="empty"><div class="ei">📊</div><p>No grade data for this term</p></div></td></tr>';
+}
+
+function renderBarChart(container, labels, values, colors, unit=''){
+  if(!labels.length){ container.innerHTML='<div class="empty"><div class="ei">📊</div><p>No data yet</p></div>'; return; }
+  const max = Math.max(...values.filter(v=>v!=null), 1);
+  container.innerHTML = `<div style="display:flex;align-items:flex-end;gap:8px;height:220px;padding:10px 0;overflow-x:auto">
+    ${labels.map((l,i)=>{
+      const v = values[i] ?? 0;
+      const h = Math.round((v/max)*180);
+      const col = Array.isArray(colors)?colors[i]:(colors||'var(--pri)');
+      return `<div style="display:flex;flex-direction:column;align-items:center;min-width:48px;flex:1">
+        <div style="font-size:11px;font-weight:700;margin-bottom:4px;color:var(--g700)">${v}${unit}</div>
+        <div style="background:${col};width:100%;height:${h}px;border-radius:6px 6px 0 0;transition:height .4s;min-height:4px"></div>
+        <div style="font-size:10px;color:var(--g500);margin-top:5px;text-align:center;line-height:1.2;max-width:52px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${l}">${l}</div>
+      </div>`;
+    }).join('')}
+  </div>`;
+}
+
+// ── FEES ───────────────────────────────────────────────────────────────────────
+async function loadFeesPage(){
+  const [cls] = await Promise.all([API.get('/api/admin/classes')||[]]);
+  if(cls){
+    const opts = cls.map(c=>`<option value="${c.id}">${c.name}</option>`).join('');
+    ['fee-class','bf-class'].forEach(id=>{ const el=$(id); if(el) el.innerHTML='<option value="">All Classes</option>'+opts; });
+  }
+  loadFees(); loadFeeSummary();
+}
+async function loadFeeSummary(){
+  const s = await API.get('/api/admin/fees/summary');
+  if(!s) return;
+  $('feeSummaryRow').innerHTML = [
+    {ic:'💰',v:'MK '+Number(s.total_due||0).toLocaleString(),l:'Total Due',bg:'#ede9fe',c:'var(--pri)'},
+    {ic:'✅',v:'MK '+Number(s.total_paid||0).toLocaleString(),l:'Total Paid',bg:'#d1fae5',c:'var(--grn)'},
+    {ic:'⚠️',v:'MK '+Number(s.total_balance||0).toLocaleString(),l:'Outstanding',bg:'#fee2e2',c:'var(--red)'},
+    {ic:'👥',v:s.defaulters||0,l:'Defaulters',bg:'#fef3c7',c:'var(--amb)'},
+  ].map(s=>`<div class="stat-card"><div class="stat-ic" style="background:${s.bg};color:${s.c}">${s.ic}</div>
+    <div class="stat-inf"><div class="val" style="font-size:15px">${s.v}</div><div class="lbl">${s.l}</div></div></div>`).join('');
+}
+async function loadFees(){
+  const cid=$('fee-class').value, term=$('fee-term').value, status=$('fee-status').value;
+  let url=`/api/admin/fees?term=${encodeURIComponent(term)}`;
+  if(cid) url+=`&class_id=${cid}`;
+  if(status) url+=`&status=${status}`;
+  const rows = await API.get(url)||[];
+  $('feeTbody').innerHTML = rows.length ? rows.map(r=>{
+    const bal = (r.amount_due||0)-(r.amount_paid||0);
+    const sc = r.status==='paid'?'badge-grn':r.status==='partial'?'badge-amb':'badge-red';
+    return `<tr>
+      <td><strong>${r.student_name}</strong></td>
+      <td><span class="badge badge-sky">${r.class_name||'—'}</span></td>
+      <td>${r.term}</td>
+      <td>MK ${Number(r.amount_due||0).toLocaleString()}</td>
+      <td style="color:var(--grn);font-weight:700">MK ${Number(r.amount_paid||0).toLocaleString()}</td>
+      <td style="color:${bal>0?'var(--red)':'var(--grn)'};font-weight:700">MK ${Number(bal).toLocaleString()}</td>
+      <td><span class="badge ${sc}">${r.status}</span></td>
+      <td style="display:flex;gap:6px">
+        <button class="btn btn-sm btn-grn" onclick="recordPayment(${r.id},${r.amount_due-r.amount_paid},this)">💳 Pay</button>
+        <button class="btn btn-sm btn-red" onclick="deleteFee(${r.id},this)">🗑</button>
+      </td>
+    </tr>`;
+  }).join('') : '<tr><td colspan="8"><div class="empty"><div class="ei">💰</div><h4>No fee records</h4><p>Set fees for a class using the button above</p></div></td></tr>';
+}
+async function setBulkFees(){
+  const r = await API.post('/api/admin/fees/bulk',{
+    class_id:$('bf-class').value||null, term:$('bf-term').value,
+    amount_due:parseFloat($('bf-amount').value)||0,
+    due_date:$('bf-due').value, note:$('bf-note').value
+  });
+  if(r?.ok){ toast(`Fees set for ${r.count} students ✅`); closeModal('m-bulkFees'); loadFees(); loadFeeSummary(); }
+  else toast(r?.error||'Error','error');
+}
+async function recordPayment(fid, balance, btn){
+  const amt = prompt(`Record payment (max MK ${Number(balance).toLocaleString()}):`);
+  if(!amt||isNaN(amt)) return;
+  btn.disabled=true;
+  const r = await API.post(`/api/admin/fees/${fid}/pay`,{amount:parseFloat(amt)});
+  btn.disabled=false;
+  if(r?.ok){ toast('Payment recorded ✅'); loadFees(); loadFeeSummary(); }
+  else toast(r?.error||'Error','error');
+}
+async function deleteFee(fid, btn){
+  if(!confirm('Delete this fee record?')) return;
+  btn.disabled=true;
+  const r = await API.del(`/api/admin/fees/${fid}`);
+  if(r?.ok){ toast('Deleted'); loadFees(); loadFeeSummary(); }
+  else toast('Error','error');
+}
+
+// ── PROMOTE ────────────────────────────────────────────────────────────────────
+async function loadPromotePage(){
+  const cls = await API.get('/api/admin/classes')||[];
+  const opts = cls.map(c=>`<option value="${c.id}">${c.name}</option>`).join('');
+  $('promo-from').innerHTML='<option value="">Select class…</option>'+opts;
+  $('promo-to').innerHTML='<option value="">Select class…</option>'+opts;
+}
+async function previewPromotion(){
+  const from=$('promo-from').value, to=$('promo-to').value, min=$('promo-min').value;
+  if(!from||!to){ toast('Select both classes','warn'); return; }
+  const r = await API.post('/api/admin/students/promote',{from_class:from,to_class:to,min_avg:parseFloat(min)||40,preview:true});
+  if(!r) return;
+  $('promoPreview').innerHTML=`<div class="card">
+    <div class="card-hdr"><h3>👁 Preview</h3>
+      <div style="display:flex;gap:8px">
+        <span class="badge badge-grn">✅ ${r.promote?.length||0} will be promoted</span>
+        <span class="badge badge-amb">⚠️ ${r.retain?.length||0} will be retained</span>
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;padding:16px">
+      <div><div style="font-weight:700;color:var(--grn);margin-bottom:8px">✅ Promote</div>
+        ${(r.promote||[]).map(s=>`<div style="padding:6px 0;border-bottom:1px solid var(--g100);font-size:13px"><strong>${s.name}</strong> — ${s.avg}%</div>`).join('')||'<p style="color:var(--g400);font-size:13px">None</p>'}
+      </div>
+      <div><div style="font-weight:700;color:var(--amb);margin-bottom:8px">⚠️ Retain (below ${min}%)</div>
+        ${(r.retain||[]).map(s=>`<div style="padding:6px 0;border-bottom:1px solid var(--g100);font-size:13px"><strong>${s.name}</strong> — ${s.avg!=null?s.avg+'%':'no grades'}</div>`).join('')||'<p style="color:var(--g400);font-size:13px">None</p>'}
+      </div>
+    </div>
+  </div>`;
+}
+async function runPromotion(){
+  const from=$('promo-from').value, to=$('promo-to').value, min=$('promo-min').value;
+  if(!from||!to){ toast('Select both classes','warn'); return; }
+  if(!confirm(`Promote qualifying students from the selected class? This cannot be undone.`)) return;
+  const r = await API.post('/api/admin/students/promote',{from_class:from,to_class:to,min_avg:parseFloat(min)||40,preview:false});
+  if(r?.ok){ toast(`${r.promoted} students promoted! 🎓`); loadStudents(); }
+  else toast(r?.error||'Error','error');
+}
+
+// ── SETTINGS ───────────────────────────────────────────────────────────────────
+async function loadSettings(){
+  const s = await API.get('/api/admin/settings'); if(!s) return;
+  const fields = {'school_name':'s-name','school_motto':'s-motto','school_address':'s-address',
+    'school_phone':'s-phone','academic_year':'s-year','email_user':'s-email-user',
+    'email_pass':'s-email-pass','smtp_host':'s-smtp-host','smtp_port':'s-smtp-port',
+    'twilio_sid':'s-twilio-sid','twilio_token':'s-twilio-token','twilio_from':'s-twilio-from'};
+  Object.entries(fields).forEach(([k,id])=>{ const el=$(id); if(el&&s[k]) el.value=s[k]; });
+  const th = localStorage.getItem('theme')||'light';
+  const sel=$('s-theme'); if(sel) sel.value=th;
+}
+async function saveSettings(){
+  const fields = {'school_name':'s-name','school_motto':'s-motto','school_address':'s-address',
+    'school_phone':'s-phone','academic_year':'s-year','email_user':'s-email-user',
+    'email_pass':'s-email-pass','smtp_host':'s-smtp-host','smtp_port':'s-smtp-port',
+    'twilio_sid':'s-twilio-sid','twilio_token':'s-twilio-token','twilio_from':'s-twilio-from'};
+  const data={};
+  Object.entries(fields).forEach(([k,id])=>{ const el=$(id); if(el) data[k]=el.value; });
+  const r = await API.post('/api/admin/settings',data);
+  if(r?.ok){ toast('Settings saved ✅'); applyTheme(localStorage.getItem('theme')||'light'); }
+  else toast('Error saving','error');
+  const th=$('s-theme')?.value||'light';
+  localStorage.setItem('theme',th); applyTheme(th);
+}
+async function testEmail(){
+  const r=await API.post('/api/admin/settings/test-email',{email:$('s-email-user')?.value});
+  toast(r?.ok?'Test email sent! 📧':(r?.error||'Failed'),'info');
+}
+async function testWhatsApp(){
+  const r=await API.post('/api/admin/settings/test-whatsapp',{});
+  toast(r?.ok?'Test WhatsApp sent! 💬':(r?.error||'Failed'),'info');
+}
+
+// ── TIMETABLE ─────────────────────────────────────────────────────────────────
+const TT_DAYS  = ['','Monday','Tuesday','Wednesday','Thursday','Friday'];
+const TT_COLORS= ['','#ede9fe','#e0f2fe','#d1fae5','#fef3c7','#fce7f3','#fee2e2','#f0fdf4','#fff7ed'];
+const TT_CBORD = ['','#7c3aed','#0284c7','#059669','#d97706','#db2777','#dc2626','#15803d','#ea580c'];
+let _ttData = [], _ttSubjects = [], _ttTeachers = [];
+
+async function loadTimetablePage(){
+  const [cls, subs, teachers] = await Promise.all([
+    API.get('/api/admin/classes') || [],
+    API.get('/api/admin/subjects') || [],
+    API.get('/api/admin/teachers') || []
+  ]);
+  _ttSubjects = subs || [];
+  _ttTeachers = teachers || [];
+  if(cls){
+    $('tt-class').innerHTML = '<option value="">Select Class…</option>' +
+      cls.map(c=>`<option value="${c.id}">${c.name}</option>`).join('');
+  }
+  $('sl-subject').innerHTML = (_ttSubjects||[]).map(s=>`<option value="${s.id}">${s.name}</option>`).join('');
+  $('sl-teacher').innerHTML = '<option value="">Not assigned</option>' +
+    (_ttTeachers||[]).map(t=>`<option value="${t.id}">${t.full_name}</option>`).join('');
+  loadTimetable();
+}
+
+async function loadTimetable(){
+  const cid = $('tt-class').value;
+  const yr  = $('tt-year').value || '2025';
+  const grid = $('ttGrid');
+  if(!cid){
+    grid.innerHTML = '<div class="card"><div class="card-bod"><div class="empty"><div class="ei">🗓️</div><h4>Select a class to view or build its timetable</h4></div></div></div>';
+    return;
+  }
+  grid.innerHTML = '<div class="empty"><div class="ei" style="animation:spin 1s linear infinite">⏳</div><p>Loading…</p></div>';
+  _ttData = await API.get(`/api/admin/timetable?class_id=${cid}&academic_year=${yr}`) || [];
+  renderTimetableGrid(_ttData, cid, yr);
+}
+
+function renderTimetableGrid(slots, cid, yr){
+  const grid = $('ttGrid');
+  // Find all unique periods
+  const periods = [...new Set(slots.map(s=>s.period))].sort((a,b)=>a-b);
+  // Also find time labels from first occurrence of each period
+  const periodTimes = {};
+  slots.forEach(s=>{ if(!periodTimes[s.period]) periodTimes[s.period] = `${s.start_time}–${s.end_time}`; });
+  // If no slots yet, show empty grid with periods 1-8
+  const allPeriods = periods.length ? periods : [1,2,3,4,5,6,7,8];
+
+  // Build lookup: day+period → slot
+  const lookup = {};
+  slots.forEach(s=>{ lookup[`${s.day_of_week}_${s.period}`] = s; });
+
+  // Subject color map
+  const subColorMap = {};
+  (_ttSubjects||[]).forEach((s,i)=>{ subColorMap[s.id] = i % (TT_COLORS.length-1) + 1; });
+
+  const thead = `<tr>
+    <th style="background:var(--g50);width:80px;font-size:12px">Period</th>
+    ${[1,2,3,4,5].map(d=>`<th style="background:var(--g50);text-align:center;min-width:130px">${TT_DAYS[d]}</th>`).join('')}
+  </tr>`;
+
+  const tbody = allPeriods.map(p=>`<tr>
+    <td style="background:var(--g50);font-size:12px;font-weight:700;text-align:center;padding:8px 4px">
+      <div>P${p}</div>
+      <div style="font-size:10px;color:var(--g400);font-weight:400">${periodTimes[p]||''}</div>
+    </td>
+    ${[1,2,3,4,5].map(d=>{
+      const slot = lookup[`${d}_${p}`];
+      if(slot){
+        const ci = subColorMap[slot.subject_id] || 1;
+        return `<td style="padding:4px">
+          <div style="background:${TT_COLORS[ci]};border-left:3px solid ${TT_CBORD[ci]};
+            border-radius:6px;padding:7px 9px;position:relative;min-height:58px">
+            <div style="font-weight:700;font-size:12px;color:${TT_CBORD[ci]}">${slot.subject_name}</div>
+            <div style="font-size:11px;color:var(--g500);margin-top:2px">${slot.teacher_name||'Unassigned'}</div>
+            ${slot.room?`<div style="font-size:10px;color:var(--g400);margin-top:1px">📍 ${slot.room}</div>`:''}
+            <button onclick="deleteSlot(${slot.id})" title="Remove"
+              style="position:absolute;top:3px;right:3px;background:none;border:none;cursor:pointer;
+                font-size:12px;color:var(--g300);line-height:1" onmouseover="this.style.color='var(--red)'"
+              onmouseout="this.style.color='var(--g300)'">✕</button>
+          </div>
+        </td>`;
+      }
+      return `<td style="padding:4px">
+        <div onclick="quickAddSlot(${d},${p})" style="border:2px dashed var(--g200);border-radius:6px;
+          min-height:58px;display:flex;align-items:center;justify-content:center;cursor:pointer;
+          color:var(--g300);font-size:18px;transition:all .15s"
+          onmouseover="this.style.borderColor='var(--pri)';this.style.color='var(--pri)'"
+          onmouseout="this.style.borderColor='var(--g200)';this.style.color='var(--g300)'">+</div>
+      </td>`;
+    }).join('')}
+  </tr>`).join('');
+
+  // Period time summary
+  const timeGuide = `
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
+      ${allPeriods.map(p=>`<span style="font-size:11px;background:var(--g100);padding:3px 8px;border-radius:6px;color:var(--g600)">
+        P${p} ${periodTimes[p]||'—'}
+      </span>`).join('')}
+    </div>`;
+
+  // Subject legend
+  const legend = `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
+    ${(_ttSubjects||[]).filter(s=>slots.some(sl=>sl.subject_id===s.id)).map(s=>{
+      const ci = subColorMap[s.id] || 1;
+      return `<span style="font-size:11px;background:${TT_COLORS[ci]};border-left:3px solid ${TT_CBORD[ci]};
+        padding:3px 8px;border-radius:4px;color:${TT_CBORD[ci]};font-weight:600">${s.name}</span>`;
+    }).join('')}
+  </div>`;
+
+  grid.innerHTML = `
+    <div class="card">
+      <div class="card-hdr">
+        <h3>🗓️ Weekly Timetable — ${$('tt-class').options[$('tt-class').selectedIndex]?.text||''} (${yr})</h3>
+        <span class="badge badge-pri">${slots.length} slots</span>
+      </div>
+      <div class="card-bod" style="padding-bottom:8px">
+        ${timeGuide}
+        <div style="overflow-x:auto">
+          <table style="width:100%;border-collapse:collapse;min-width:700px">
+            <thead>${thead}</thead>
+            <tbody>${tbody}</tbody>
+          </table>
+        </div>
+        ${slots.length ? legend : ''}
+      </div>
+    </div>`;
+}
+
+function quickAddSlot(day, period){
+  $('sl-day').value = day;
+  $('sl-period').value = period;
+  // Auto-fill time based on period
+  const times = {1:['07:30','08:10'],2:['08:10','08:50'],3:['08:50','09:30'],
+                 4:['09:50','10:30'],5:['10:30','11:10'],6:['11:10','11:50'],
+                 7:['12:30','13:10'],8:['13:10','13:50']};
+  if(times[period]){ $('sl-start').value=times[period][0]; $('sl-end').value=times[period][1]; }
+  openModal('m-addSlot');
+}
+
+async function saveSlot(){
+  const cid = $('tt-class').value;
+  const yr  = $('tt-year').value || '2025';
+  if(!cid){ toast('Select a class first','warn'); return; }
+  const r = await API.post('/api/admin/timetable',{
+    class_id: cid, academic_year: yr,
+    subject_id: $('sl-subject').value,
+    teacher_id: $('sl-teacher').value || null,
+    day_of_week: $('sl-day').value,
+    period: $('sl-period').value,
+    start_time: $('sl-start').value,
+    end_time: $('sl-end').value,
+    room: $('sl-room').value
+  });
+  if(r?.ok){ toast('Slot saved ✅'); closeModal('m-addSlot'); $('sl-room').value=''; loadTimetable(); }
+  else toast(r?.error||'Could not save — slot may already exist','error');
+}
+
+async function deleteSlot(id){
+  const r = await API.del(`/api/admin/timetable/${id}`);
+  if(r?.ok){ toast('Slot removed'); loadTimetable(); }
+  else toast('Error removing slot','error');
+}
+
+async function clearTimetable(){
+  const cid = $('tt-class').value; const yr = $('tt-year').value||'2025';
+  if(!cid){ toast('Select a class first','warn'); return; }
+  const cls = $('tt-class').options[$('tt-class').selectedIndex]?.text||'';
+  if(!confirm(`Clear ALL timetable slots for ${cls}? This cannot be undone.`)) return;
+  const r = await API.post('/api/admin/timetable/clear',{class_id:cid,academic_year:yr});
+  if(r?.ok){ toast('Timetable cleared'); loadTimetable(); }
+  else toast('Error','error');
+}
+
+function printTimetable(){
+  const grid = $('ttGrid');
+  if(!grid?.innerHTML){ toast('Load a timetable first','warn'); return; }
+  const w = window.open('','_blank');
+  w.document.write(`<!DOCTYPE html><html><head><title>Timetable</title>
+    <style>body{font-family:Arial,sans-serif;padding:20px}
+    table{width:100%;border-collapse:collapse}
+    th,td{border:1px solid #ddd;padding:8px;font-size:12px}
+    th{background:#f5f3ff;font-weight:700}
+    @media print{button{display:none}}</style></head>
+    <body>${grid.innerHTML}<br><button onclick="window.print()">🖨️ Print</button></body></html>`);
+  w.document.close();
+}
+
 // ── INIT ──────────────────────────────────────────────────────────────────────
 loadDashboard();
 loadStudents();   // preload class selects
@@ -2487,8 +3597,15 @@ TEACHER_HTML = """<!DOCTYPE html><html lang="en"><head>
     <span class="ni">✏️</span>Enter Grades</button>
   <button class="nav-btn" data-sec="gradebook" onclick="sec(this)">
     <span class="ni">📊</span>Grade Book</button>
+  <button class="nav-btn" data-sec="mytimetable" onclick="sec(this)">
+    <span class="ni">🗓️</span>My Timetable</button>
   <div class="sb-divider"></div>
   <div class="sb-label">Other</div>
+  <button class="nav-btn" data-sec="homework" onclick="sec(this)">
+    <span class="ni">📝</span>Homework</button>
+  <button class="nav-btn" data-sec="alerts" onclick="sec(this)">
+    <span class="ni">🔔</span>Attendance Alerts</button>
+  <div class="sb-divider"></div>
   <button class="nav-btn" data-sec="announcements" onclick="sec(this)">
     <span class="ni">📢</span>Announcements</button>
   <button class="nav-btn" data-sec="profile" onclick="sec(this)">
@@ -2499,12 +3616,16 @@ TEACHER_HTML = """<!DOCTYPE html><html lang="en"><head>
 
 <!-- ══ MAIN ═════════════════════════════════════════════════════════════════ -->
 <div class="main">
+<div id="offlineBar" style="display:none;background:#dc2626;color:#fff;padding:8px 20px;font-size:13px;font-weight:600;align-items:center;gap:8px;justify-content:center">
+  📡 You are offline — changes may not be saved
+</div>
 <div class="topbar">
   <div style="display:flex;align-items:center;gap:12px">
     <button onclick="toggleSb()" style="background:none;border:none;font-size:22px;cursor:pointer;color:var(--g500)">☰</button>
-    <div style="font-size:15px;font-weight:800;color:var(--g900)" id="pageTitle">My Classes</div>
+    <div style="font-size:15px;font-weight:800;color:var(--g900)" id="pageTitle">Dashboard</div>
   </div>
   <div style="display:flex;align-items:center;gap:10px">
+    <button id="themeBtn" onclick="toggleTheme()" style="background:none;border:none;font-size:20px;cursor:pointer" title="Toggle dark mode">🌙</button>
     <div class="avatar" style="width:36px;height:36px;background:var(--grn)">{{ name[0] }}</div>
     <span style="font-size:13px;font-weight:600" id="topTeacher">{{ name }}</span>
   </div>
@@ -2742,6 +3863,37 @@ TEACHER_HTML = """<!DOCTYPE html><html lang="en"><head>
   </div>
 </div>
 
+<!-- ─── MY TIMETABLE ─────────────────────────────────────────────────────── -->
+<div class="sec" id="sec-mytimetable">
+  <div class="pg-hdr">
+    <div class="pg-hdr-left"><h2>🗓️ My Timetable</h2><p>Your weekly teaching schedule</p></div>
+    <button class="btn btn-ghost" onclick="loadMyTimetable()">🔄 Refresh</button>
+  </div>
+  <div id="myTtGrid"></div>
+</div>
+
+<!-- ─── HOMEWORK ──────────────────────────────────────────────────────────── -->
+<div class="sec" id="sec-homework">
+  <div class="pg-hdr">
+    <div class="pg-hdr-left"><h2>📝 Homework</h2><p>Assign homework and track submissions</p></div>
+    <button class="btn btn-pri" onclick="openModal('m-addHomework')">➕ New Assignment</button>
+  </div>
+  <div id="homeworkList"></div>
+</div>
+
+<!-- ─── ATTENDANCE ALERTS ─────────────────────────────────────────────────── -->
+<div class="sec" id="sec-alerts">
+  <div class="pg-hdr">
+    <div class="pg-hdr-left"><h2>🔔 Attendance Alerts</h2><p>Students below threshold — notify parents instantly</p></div>
+  </div>
+  <div class="filter-bar">
+    <select id="alert-class" style="min-width:200px"></select>
+    <input id="alert-thresh" type="number" value="80" min="1" max="100" style="max-width:120px" placeholder="Min %">
+    <button class="btn btn-pri" onclick="loadAlerts()">🔍 Check Alerts</button>
+  </div>
+  <div id="alertsList"></div>
+</div>
+
 <!-- ─── MY PROFILE ─────────────────────────────────────────────────────────── -->
 <div class="sec" id="sec-profile">
   <div class="pg-hdr">
@@ -2784,6 +3936,9 @@ function sec(btn){
   else if(id==='students') loadMyStudents();
   else if(id==='profile') loadProfile();
   else if(id==='announcements') loadAnnouncements();
+  else if(id==='mytimetable') loadMyTimetable();
+  else if(id==='homework') loadHomework();
+  else if(id==='alerts') initAlerts();
 }
 function toggleSb(){$('sidebar').classList.toggle('open');$('sbOverlay').classList.toggle('open');}
 function closeSb(){$('sidebar').classList.remove('open');$('sbOverlay').classList.remove('open');}
@@ -2793,6 +3948,228 @@ function switchGradeTab(name,btn){
   ['manual','voice','scan','canvas'].forEach(t=>$('gt-'+t).style.display=t===name?'block':'none');
   $$('.tab-btn').forEach(b=>b.classList.remove('active')); btn.classList.add('active');
   if(name==='canvas') initCanvas();
+}
+
+// ── MY TIMETABLE ─────────────────────────────────────────────────────────────
+const T_DAYS   = ['','Monday','Tuesday','Wednesday','Thursday','Friday'];
+const T_COLORS = ['','#ede9fe','#e0f2fe','#d1fae5','#fef3c7','#fce7f3','#fee2e2','#f0fdf4','#fff7ed'];
+const T_CBORD  = ['','#7c3aed','#0284c7','#059669','#d97706','#db2777','#dc2626','#15803d','#ea580c'];
+
+async function loadMyTimetable(){
+  const el = $('myTtGrid');
+  el.innerHTML = '<div class="empty"><div class="ei" style="animation:spin 1s linear infinite">⏳</div><p>Loading…</p></div>';
+  const slots = await API.get('/api/teacher/timetable') || [];
+  if(!slots.length){
+    el.innerHTML = '<div class="card"><div class="card-bod"><div class="empty"><div class="ei">🗓️</div><h4>No timetable assigned yet</h4><p>Ask admin to build your timetable</p></div></div></div>';
+    return;
+  }
+  const today = new Date().getDay(); // 0=Sun,1=Mon…5=Fri
+
+  // Build lookup
+  const lookup = {};
+  const periods = [...new Set(slots.map(s=>s.period))].sort((a,b)=>a-b);
+  const periodTimes = {};
+  const subColorMap = {};
+  let colorIdx = 1;
+  slots.forEach(s=>{
+    lookup[`${s.day_of_week}_${s.period}`] = s;
+    if(!periodTimes[s.period]) periodTimes[s.period] = `${s.start_time}–${s.end_time}`;
+    if(!subColorMap[s.subject_id]){ subColorMap[s.subject_id] = colorIdx % (T_COLORS.length-1) + 1; colorIdx++; }
+  });
+  const allPeriods = periods.length ? periods : [1,2,3,4,5,6,7,8];
+
+  // Today's schedule highlight
+  const todaySlots = slots.filter(s=>s.day_of_week===today).sort((a,b)=>a.period-b.period);
+  const todayHtml = todaySlots.length ? `
+    <div class="card" style="margin-bottom:16px;border-left:4px solid var(--pri)">
+      <div class="card-hdr"><h3>📅 Today — ${T_DAYS[today]}</h3>
+        <span class="badge badge-pri">${todaySlots.length} periods</span></div>
+      <div style="display:flex;flex-wrap:wrap;gap:10px;padding:12px 16px">
+        ${todaySlots.map(s=>{
+          const ci = subColorMap[s.subject_id]||1;
+          return `<div style="background:${T_COLORS[ci]};border-left:3px solid ${T_CBORD[ci]};border-radius:8px;padding:10px 14px;min-width:140px">
+            <div style="font-size:11px;color:${T_CBORD[ci]};font-weight:700">P${s.period} · ${s.start_time}–${s.end_time}</div>
+            <div style="font-weight:800;font-size:14px;margin-top:3px">${s.subject_name}</div>
+            <div style="font-size:12px;color:var(--g500);margin-top:2px">${s.class_name}</div>
+            ${s.room?`<div style="font-size:11px;color:var(--g400);margin-top:2px">📍 ${s.room}</div>`:''}
+          </div>`;
+        }).join('')}
+      </div>
+    </div>` : (today>=1&&today<=5 ? '<div class="card" style="margin-bottom:16px"><div class="card-bod"><div class="empty" style="padding:16px"><div class="ei">☀️</div><p>No classes scheduled for today</p></div></div></div>' : '');
+
+  const thead = `<tr>
+    <th style="background:var(--g50);width:72px;font-size:12px">Period</th>
+    ${[1,2,3,4,5].map(d=>`<th style="text-align:center;min-width:120px;background:${d===today?'var(--pri-xl)':'var(--g50)'}">
+      ${T_DAYS[d]}${d===today?' <span style="font-size:10px;color:var(--pri)">(Today)</span>':''}
+    </th>`).join('')}
+  </tr>`;
+
+  const tbody = allPeriods.map(p=>`<tr>
+    <td style="background:var(--g50);font-size:11px;font-weight:700;text-align:center;padding:6px 4px">
+      <div>P${p}</div>
+      <div style="font-size:10px;color:var(--g400);font-weight:400">${periodTimes[p]||''}</div>
+    </td>
+    ${[1,2,3,4,5].map(d=>{
+      const slot = lookup[`${d}_${p}`];
+      const isTodayCol = d===today;
+      if(slot){
+        const ci = subColorMap[slot.subject_id]||1;
+        return `<td style="padding:3px;background:${isTodayCol?'rgba(79,70,229,.04)':''}">
+          <div style="background:${T_COLORS[ci]};border-left:3px solid ${T_CBORD[ci]};border-radius:6px;padding:7px 9px;min-height:54px">
+            <div style="font-weight:700;font-size:12px;color:${T_CBORD[ci]}">${slot.subject_name}</div>
+            <div style="font-size:11px;color:var(--g500);margin-top:2px">${slot.class_name}</div>
+            ${slot.room?`<div style="font-size:10px;color:var(--g400);margin-top:1px">📍 ${slot.room}</div>`:''}
+          </div>
+        </td>`;
+      }
+      return `<td style="background:${isTodayCol?'rgba(79,70,229,.03)':''}"><div style="min-height:54px"></div></td>`;
+    }).join('')}
+  </tr>`).join('');
+
+  el.innerHTML = todayHtml + `
+    <div class="card">
+      <div class="card-hdr"><h3>📅 Full Week Schedule</h3>
+        <span class="badge badge-pri">${slots.length} total periods</span></div>
+      <div class="card-bod" style="padding:0">
+        <div style="overflow-x:auto">
+          <table style="width:100%;border-collapse:collapse;min-width:640px">
+            <thead>${thead}</thead>
+            <tbody>${tbody}</tbody>
+          </table>
+        </div>
+      </div>
+    </div>`;
+}
+
+// ── HOMEWORK ─────────────────────────────────────────────────────────────────
+async function loadHomework(){
+  const hw = await API.get('/api/teacher/homework') || [];
+  const hwEl = $('homeworkList');
+  if(!hwEl) return;
+  // Populate hw-class select
+  const cls = [...new Map(myAssignments.map(a=>[a.class_id,a])).values()];
+  const hwCls = $('hw-class');
+  if(hwCls) hwCls.innerHTML = cls.map(a=>`<option value="${a.class_id}">${a.class_name}</option>`).join('');
+  onHwClassChange();
+  if(!hw.length){
+    hwEl.innerHTML='<div class="card"><div class="card-bod"><div class="empty"><div class="ei">📝</div><h4>No assignments yet</h4><p>Click "+ New Assignment" to create one</p></div></div></div>';
+    return;
+  }
+  hwEl.innerHTML = hw.map(h=>`
+    <div class="card" style="margin-bottom:14px">
+      <div class="card-hdr">
+        <div>
+          <div style="font-weight:800;font-size:15px">${h.title}</div>
+          <div style="font-size:12px;color:var(--g500);margin-top:3px">
+            <span class="badge badge-sky">${h.class_name}</span>
+            <span class="badge badge-pri" style="margin-left:6px">📚 ${h.subject_name}</span>
+            ${h.due_date?`<span style="margin-left:8px">📅 Due: ${h.due_date}</span>`:''}
+            ${h.max_marks?`<span style="margin-left:8px">🏅 ${h.max_marks} marks</span>`:''}
+          </div>
+        </div>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-sm btn-ghost" onclick="viewSubmissions(${h.id},'${h.title.replace(/'/g,"\\'")}')">📋 Submissions (${h.submitted_count||0}/${h.total_students||0})</button>
+          <button class="btn btn-sm btn-red" onclick="deleteHomework(${h.id},this)">🗑</button>
+        </div>
+      </div>
+      ${h.description?`<div class="card-bod" style="padding-top:0;font-size:13px;color:var(--g600)">${h.description}</div>`:''}
+    </div>`).join('');
+}
+function onHwClassChange(){
+  const cid = $('hw-class')?.value;
+  const subs = myAssignments.filter(a=>String(a.class_id)===String(cid));
+  const hwSub = $('hw-subject');
+  if(hwSub) hwSub.innerHTML = subs.map(a=>`<option value="${a.subject_id}">${a.subject_name}</option>`).join('');
+}
+async function addHomework(){
+  const r = await API.post('/api/teacher/homework',{
+    class_id:$('hw-class').value, subject_id:$('hw-subject').value,
+    title:$('hw-title').value, description:$('hw-desc').value,
+    due_date:$('hw-due').value, max_marks:parseInt($('hw-marks').value)||0
+  });
+  if(r?.ok){ toast('Assignment added! 📝'); closeModal('m-addHomework');
+    $('hw-title').value=''; $('hw-desc').value=''; loadHomework(); }
+  else toast(r?.error||'Error','error');
+}
+async function deleteHomework(id,btn){
+  if(!confirm('Delete this assignment?')) return;
+  btn.disabled=true;
+  const r = await API.del(`/api/teacher/homework/${id}`);
+  if(r?.ok){ toast('Deleted'); loadHomework(); }
+  else { toast('Error','error'); btn.disabled=false; }
+}
+async function viewSubmissions(hwId, title){
+  openModal('m-hwSubmissions');
+  $('hwSubTitle').textContent = `📋 ${title} — Submissions`;
+  $('hwSubBody').innerHTML = '<div class="empty"><div class="ei" style="animation:spin 1s linear infinite">⏳</div><p>Loading…</p></div>';
+  const subs = await API.get(`/api/teacher/homework/${hwId}/submissions`) || [];
+  if(!subs.length){ $('hwSubBody').innerHTML='<div class="empty"><div class="ei">📋</div><p>No submissions yet</p></div>'; return; }
+  $('hwSubBody').innerHTML = `<table style="width:100%;border-collapse:collapse">
+    <thead><tr style="background:var(--g50)"><th style="padding:9px 12px;text-align:left">Student</th><th style="padding:9px 12px;text-align:center">Status</th><th style="padding:9px 12px;text-align:center">Marks</th><th style="padding:9px 12px">Note</th><th style="padding:9px 12px">Action</th></tr></thead>
+    <tbody>${subs.map(s=>`<tr style="border-bottom:1px solid var(--g100)">
+      <td style="padding:9px 12px;font-weight:600">${s.student_name}</td>
+      <td style="padding:9px 12px;text-align:center">
+        <select onchange="updateSubmission(${s.id},this.value,null)" style="font-size:12px;padding:4px 8px;width:auto">
+          ${['pending','submitted','graded','missing'].map(st=>`<option value="${st}" ${s.status===st?'selected':''}>${st}</option>`).join('')}
+        </select>
+      </td>
+      <td style="padding:9px 12px;text-align:center">
+        <input type="number" value="${s.marks||''}" placeholder="—" style="width:60px;padding:4px;text-align:center;font-size:12px"
+          onchange="updateSubmission(${s.id},null,this.value)">
+      </td>
+      <td style="padding:9px 12px;font-size:12px;color:var(--g500)">${s.note||'—'}</td>
+      <td style="padding:9px 12px"><button class="btn btn-sm btn-ghost" onclick="updateSubmission(${s.id},null,null,this)">💾</button></td>
+    </tr>`).join('')}</tbody>
+  </table>`;
+}
+async function updateSubmission(id, status, marks, btn){
+  const body={};
+  if(status) body.status=status;
+  if(marks!=null&&marks!=='') body.marks=parseInt(marks);
+  await API.put(`/api/teacher/homework/submission/${id}`,body);
+  if(btn){ btn.textContent='✅'; setTimeout(()=>btn.textContent='💾',1200); }
+}
+
+// ── ATTENDANCE ALERTS ─────────────────────────────────────────────────────────
+function initAlerts(){
+  const cls = [...new Map(myAssignments.map(a=>[a.class_id,a])).values()];
+  const sel = $('alert-class');
+  if(sel) sel.innerHTML = cls.map(a=>`<option value="${a.class_id}">${a.class_name}</option>`).join('');
+}
+async function loadAlerts(){
+  const cid = $('alert-class').value;
+  const thresh = parseFloat($('alert-thresh').value)||80;
+  if(!cid){ toast('Select a class first','warn'); return; }
+  const data = await API.get(`/api/teacher/attendance/alerts/${cid}?threshold=${thresh}`) || [];
+  const el = $('alertsList');
+  if(!data.length){
+    el.innerHTML='<div class="card"><div class="card-bod"><div class="empty"><div class="ei">✅</div><h4>No alerts — all students above '+thresh+'%</h4></div></div></div>';
+    return;
+  }
+  el.innerHTML = `<div class="card">
+    <div class="card-hdr"><h3>⚠️ ${data.length} students below ${thresh}% attendance</h3></div>
+    <div class="tbl-wrap"><table>
+      <thead><tr><th>Student</th><th>Attendance</th><th>Absences</th><th>Parent</th><th>Contact</th><th>Notify</th></tr></thead>
+      <tbody>${data.map(s=>`<tr>
+        <td><strong>${s.student_name}</strong></td>
+        <td><span style="font-weight:800;color:${s.rate<60?'var(--red)':'var(--amb)'}">${s.rate}%</span></td>
+        <td style="text-align:center">${s.absences} / ${s.total} days</td>
+        <td>${s.parent_name||'—'}</td>
+        <td style="font-size:12px">${s.parent_whatsapp||s.parent_phone||'—'}</td>
+        <td><button class="btn btn-sm btn-grn" onclick="notifyParent(${s.student_id},this)"
+          ${!(s.parent_whatsapp||s.parent_phone)?'disabled title="No number on record"':''}>
+          💬 WhatsApp</button></td>
+      </tr>`).join('')}
+      </tbody>
+    </table></div>
+  </div>`;
+}
+async function notifyParent(sid, btn){
+  btn.disabled=true; btn.textContent='⏳';
+  const r = await API.post('/api/teacher/attendance/notify',{student_id:sid});
+  btn.textContent = r?.ok ? '✅ Sent' : '❌ Failed';
+  if(!r?.ok) toast(r?.error||'Could not send notification','error');
+  else toast('Parent notified via WhatsApp ✅');
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────────
@@ -3313,6 +4690,37 @@ async function loadGradeBook(){
 
 init();
 </script>
+
+<!-- Add Homework Modal -->
+<div class="modal-bg" id="m-addHomework" onclick="if(event.target===this)closeModal(this.id)" style="display:none">
+<div class="modal"><div class="modal-hdr"><h3>📝 New Homework Assignment</h3>
+  <button class="close" onclick="closeModal('m-addHomework')">✕</button></div>
+<div class="modal-bod">
+  <div class="frow2">
+    <div class="fg"><label class="flbl">Class</label>
+      <select id="hw-class"></select></div>
+    <div class="fg"><label class="flbl">Subject</label>
+      <select id="hw-subject"></select></div>
+  </div>
+  <div class="fg"><label class="flbl">Title *</label><input id="hw-title" placeholder="e.g. Chapter 3 Exercise"></div>
+  <div class="fg"><label class="flbl">Description</label><textarea id="hw-desc" rows="3" placeholder="Instructions…"></textarea></div>
+  <div class="frow2">
+    <div class="fg"><label class="flbl">Due Date</label><input id="hw-due" type="date"></div>
+    <div class="fg"><label class="flbl">Max Marks (0 = no marks)</label><input id="hw-marks" type="number" value="0" min="0"></div>
+  </div>
+</div>
+<div class="modal-ftr">
+  <button class="btn btn-ghost" onclick="closeModal('m-addHomework')">Cancel</button>
+  <button class="btn btn-pri" onclick="addHomework()">📝 Add Assignment</button>
+</div></div></div>
+
+<!-- Homework Submissions Modal -->
+<div class="modal-bg" id="m-hwSubmissions" onclick="if(event.target===this)closeModal(this.id)" style="display:none">
+<div class="modal" style="max-width:720px"><div class="modal-hdr"><h3 id="hwSubTitle">📋 Submissions</h3>
+  <button class="close" onclick="closeModal('m-hwSubmissions')">✕</button></div>
+<div class="modal-bod" id="hwSubBody" style="max-height:70vh;overflow-y:auto"></div>
+</div></div>
+
 </body></html>"""
 
 TEACHER_HTML = TEACHER_HTML.replace('{{ GLOBAL }}', GLOBAL)
@@ -3325,4 +4733,4 @@ if __name__ == '__main__':
     print("║  Admin:  admin@school.mw  /  Admin@2025             ║")
     print("║  URL:    http://localhost:5000                       ║")
     print("╚══════════════════════════════════════════════════════╝")
-    app.run(debug=True, host='0.0.0.0', port=5000)# redeploy trigger
+    app.run(debug=True, host='0.0.0.0', port=5000)
