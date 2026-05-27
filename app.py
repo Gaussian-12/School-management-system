@@ -6,6 +6,25 @@
 """
 
 from flask import (Flask, render_template_string, request, jsonify,
+
+def login_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if 'user_id' not in session:
+            if request.is_json:
+                return jsonify({'error': 'Login required'}), 401
+            return redirect('/')
+        return f(*args, **kwargs)
+    return decorated
+
+def admin_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if session.get('role') != 'admin':
+            return jsonify({'error': 'Admin access required'}), 403
+        return f(*args, **kwargs)
+    return decorated
+
                    send_file, session, redirect, url_for)
 from flask_cors import CORS
 import sqlite3, bcrypt, os, base64, io, re, json, smtplib
