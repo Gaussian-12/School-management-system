@@ -298,7 +298,7 @@ def init_db():
         ('Social Studies','SOC',100),('Religious Education','RE',100),
         ('Expressive Arts','ARTS',100),('Life Skills','LIFE',100)]:
         try:
-            c.execute("INSERT INTO subjects(name, code, max_marks) VALUES(%s,%s,%s)", (name, code, mx))
+            c.execute("INSERT OR IGNORE INTO subjects(name, code, max_marks) VALUES(%s,%s,%s)", (name, code, mx))
         except:
             pass
 
@@ -309,7 +309,7 @@ def init_db():
         ('Standard 4 A',4,'A'),('Standard 5 A',5,'A'),
         ('Standard 6 A',6,'A'),('Standard 7 A',7,'A'),('Standard 8 A',8,'A')]:
         try:
-            c.execute("INSERT INTO classes(name, grade_level, stream) VALUES(%s,%s,%s)", (name, gl, st))
+            c.execute("INSERT OR IGNORE INTO classes(name, grade_level, stream) VALUES(%s,%s,%s)", (name, gl, st))
         except:
             pass
 
