@@ -17,29 +17,30 @@
 from flask import (Flask, render_template_string, request, jsonify,
                    send_file, session, redirect, url_for)
 from flask_cors import CORS
-import sqlite3, bcrypt, os, base64, io, re, json, smtplib
+import bcrypt, os, base64, io, re, json, smtplib
 from datetime import datetime
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
 from email import encoders
 from functools import wraps
-import os
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
-# Database configuration
+# ── Database configuration (PostgreSQL only) ─────────────────────────────────
 DATABASE_URL = os.environ.get('DATABASE_URL', '')
-USE_POSTGRES = DATABASE_URL and DATABASE_URL.startswith('postgres')
 
 def get_db():
-    if USE_POSTGRES:
-        conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
-        return conn
-    else:
-        conn = sqlite3.connect('sms.db')
-        conn.row_factory = sqlite3.Row
-        return conn
+    conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+    conn.autocommit = False
+    return conn
+
+def q(conn, sql, params=()):
+    """Execute a query and return the cursor. Converts ? → %s for PostgreSQL."""
+    pg_sql = sql.replace('?', '%s')
+    cur = conn.cursor()
+    cur.execute(pg_sql, params)
+    return cur
 # ── Optional heavy dependencies ───────────────────────────────────────────────
 try:
     from weasyprint import HTML as WeasyHTML; HAS_PDF = True
@@ -73,31 +74,31 @@ def init_db():
     conn = get_db()
     c = conn.cursor()
     
-    # Create tables - individual statements for PostgreSQL compatibility
+    # Create tables - PostgreSQL compatible
     c.execute('''
         CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             username TEXT UNIQUE NOT NULL,
-            password BLOB NOT NULL,
+            password BYTEA NOT NULL,
             full_name TEXT NOT NULL,
             email TEXT,
             phone TEXT,
             whatsapp TEXT,
-            role TEXT NOT NULL CHECK(role IN ("admin","teacher")),
+            role TEXT NOT NULL CHECK(role IN ('admin','teacher')),
             approved INTEGER DEFAULT 0,
             subjects_note TEXT,
-            avatar_color TEXT DEFAULT "#4f46e5",
+            avatar_color TEXT DEFAULT '#4f46e5',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
     
     c.execute('''
         CREATE TABLE IF NOT EXISTS classes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             name TEXT NOT NULL,
             grade_level INTEGER DEFAULT 1,
             stream TEXT,
-            academic_year TEXT DEFAULT "2025",
+            academic_year TEXT DEFAULT '2025',
             class_teacher_id INTEGER,
             FOREIGN KEY(class_teacher_id) REFERENCES users(id)
         )
@@ -105,7 +106,7 @@ def init_db():
     
     c.execute('''
         CREATE TABLE IF NOT EXISTS subjects (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             name TEXT NOT NULL,
             code TEXT,
             max_marks INTEGER DEFAULT 100,
@@ -115,7 +116,7 @@ def init_db():
     
     c.execute('''
         CREATE TABLE IF NOT EXISTS students (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             admission_number TEXT UNIQUE NOT NULL,
             full_name TEXT NOT NULL,
             gender TEXT,
@@ -135,7 +136,7 @@ def init_db():
     
     c.execute('''
         CREATE TABLE IF NOT EXISTS teacher_subjects (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             teacher_id INTEGER NOT NULL,
             subject_id INTEGER NOT NULL,
             class_id INTEGER NOT NULL,
@@ -148,16 +149,16 @@ def init_db():
     
     c.execute('''
         CREATE TABLE IF NOT EXISTS grades (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             student_id INTEGER NOT NULL,
             subject_id INTEGER NOT NULL,
             teacher_id INTEGER NOT NULL,
             class_id INTEGER NOT NULL,
             score REAL,
             max_score REAL DEFAULT 100,
-            method TEXT DEFAULT "manual",
+            method TEXT DEFAULT 'manual',
             term TEXT NOT NULL,
-            academic_year TEXT DEFAULT "2025",
+            academic_year TEXT DEFAULT '2025',
             comment TEXT,
             entered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(student_id, subject_id, term, academic_year),
@@ -170,12 +171,12 @@ def init_db():
     
     c.execute('''
         CREATE TABLE IF NOT EXISTS attendance (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             student_id INTEGER NOT NULL,
             class_id INTEGER NOT NULL,
             teacher_id INTEGER NOT NULL,
             date TEXT NOT NULL,
-            status TEXT NOT NULL CHECK(status IN ("present","absent","late","excused")),
+            status TEXT NOT NULL CHECK(status IN ('present','absent','late','excused')),
             note TEXT,
             UNIQUE(student_id, date),
             FOREIGN KEY(student_id) REFERENCES students(id)
@@ -184,13 +185,13 @@ def init_db():
     
     c.execute('''
         CREATE TABLE IF NOT EXISTS report_deliveries (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             student_id INTEGER NOT NULL,
             term TEXT NOT NULL,
-            academic_year TEXT DEFAULT "2025",
+            academic_year TEXT DEFAULT '2025',
             channel TEXT NOT NULL,
             recipient TEXT,
-            status TEXT DEFAULT "sent",
+            status TEXT DEFAULT 'sent',
             error_msg TEXT,
             sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY(student_id) REFERENCES students(id)
@@ -199,7 +200,7 @@ def init_db():
     
     c.execute('''
         CREATE TABLE IF NOT EXISTS announcements (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             title TEXT NOT NULL,
             body TEXT NOT NULL,
             author_id INTEGER,
@@ -209,7 +210,7 @@ def init_db():
     
     c.execute('''
         CREATE TABLE IF NOT EXISTS fees (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             student_id INTEGER NOT NULL,
             academic_year TEXT DEFAULT '2025',
             term TEXT NOT NULL,
@@ -226,7 +227,7 @@ def init_db():
     
     c.execute('''
         CREATE TABLE IF NOT EXISTS homework (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             teacher_id INTEGER NOT NULL,
             class_id INTEGER NOT NULL,
             subject_id INTEGER NOT NULL,
@@ -243,7 +244,7 @@ def init_db():
     
     c.execute('''
         CREATE TABLE IF NOT EXISTS homework_submissions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             homework_id INTEGER NOT NULL,
             student_id INTEGER NOT NULL,
             status TEXT DEFAULT 'pending',
@@ -265,7 +266,7 @@ def init_db():
     
     c.execute('''
         CREATE TABLE IF NOT EXISTS timetable (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             class_id INTEGER NOT NULL,
             subject_id INTEGER NOT NULL,
             teacher_id INTEGER,
@@ -285,7 +286,7 @@ def init_db():
     # Seed admin
     pwd = bcrypt.hashpw('Admin@2025'.encode(), bcrypt.gensalt())
     try:
-        c.execute("INSERT INTO users (username, password, full_name, email, role, approved, avatar_color) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        c.execute("INSERT INTO users (username, password, full_name, email, role, approved, avatar_color) VALUES (%s, %s, %s, %s, %s, %s, %s)",
                   ('admin@school.mw', pwd, 'System Administrator', 'admin@school.mw', 'admin', 1, '#4f46e5'))
     except:
         pass
@@ -297,7 +298,7 @@ def init_db():
         ('Social Studies','SOC',100),('Religious Education','RE',100),
         ('Expressive Arts','ARTS',100),('Life Skills','LIFE',100)]:
         try:
-            c.execute("INSERT INTO subjects(name, code, max_marks) VALUES(?,?,?)", (name, code, mx))
+            c.execute("INSERT INTO subjects(name, code, max_marks) VALUES(%s,%s,%s)", (name, code, mx))
         except:
             pass
 
@@ -308,13 +309,13 @@ def init_db():
         ('Standard 4 A',4,'A'),('Standard 5 A',5,'A'),
         ('Standard 6 A',6,'A'),('Standard 7 A',7,'A'),('Standard 8 A',8,'A')]:
         try:
-            c.execute("INSERT INTO classes(name, grade_level, stream) VALUES(?,?,?)", (name, gl, st))
+            c.execute("INSERT INTO classes(name, grade_level, stream) VALUES(%s,%s,%s)", (name, gl, st))
         except:
             pass
 
     conn.commit()
     conn.close()
-    print(f"✅ Database initialised ({'PostgreSQL' if USE_POSTGRES else 'SQLite'})")
+    print("✅ Database initialised (PostgreSQL)")
 
 init_db()
 
@@ -558,7 +559,7 @@ def api_change_password():
     u = q(conn,"SELECT password FROM users WHERE id=?",(session['user_id'],)).fetchone()
     if not u or not bcrypt.checkpw(d.get('old','').encode(), u['password']):
         conn.close(); return jsonify({'ok':False,'msg':'Current password is wrong'}), 401
-    conn.execute("UPDATE users SET password=? WHERE id=?",
+    q(conn,"UPDATE users SET password=%s WHERE id=%s",
                  (bcrypt.hashpw(d['new'].encode(), bcrypt.gensalt()), session['user_id']))
     conn.commit(); conn.close()
     return jsonify({'ok':True,'msg':'Password changed!'})
@@ -600,7 +601,7 @@ def admin_add_teacher():
 @admin_required
 def admin_approve_teacher(tid):
     conn = get_db()
-    conn.execute("UPDATE users SET approved=1 WHERE id=? AND role='teacher'",(tid,))
+    q(conn,"UPDATE users SET approved=1 WHERE id=%s AND role='teacher'",(tid,))
     conn.commit(); conn.close()
     return jsonify({'ok':True})
 
@@ -609,8 +610,8 @@ def admin_approve_teacher(tid):
 @admin_required
 def admin_delete_teacher(tid):
     conn = get_db()
-    conn.execute("DELETE FROM teacher_subjects WHERE teacher_id=?",(tid,))
-    conn.execute("DELETE FROM users WHERE id=? AND role='teacher'",(tid,))
+    q(conn,"DELETE FROM teacher_subjects WHERE teacher_id=%s",(tid,))
+    q(conn,"DELETE FROM users WHERE id=%s AND role='teacher'",(tid,))
     conn.commit(); conn.close()
     return jsonify({'ok':True})
 
@@ -643,7 +644,7 @@ def admin_add_class():
 @admin_required
 def admin_delete_class(cid):
     conn = get_db()
-    conn.execute("DELETE FROM classes WHERE id=?",(cid,))
+    q(conn,"DELETE FROM classes WHERE id=%s",(cid,))
     conn.commit(); conn.close()
     return jsonify({'ok':True})
 
@@ -675,7 +676,7 @@ def admin_add_subject():
 @admin_required
 def admin_delete_subject(sid):
     conn = get_db()
-    conn.execute("DELETE FROM subjects WHERE id=?",(sid,))
+    q(conn,"DELETE FROM subjects WHERE id=%s",(sid,))
     conn.commit(); conn.close()
     return jsonify({'ok':True})
 
@@ -722,8 +723,8 @@ def admin_add_student():
 def admin_update_student(sid):
     d = request.json or {}
     conn = get_db()
-    conn.execute("""UPDATE students SET full_name=?,class_id=?,gender=?,parent_name=?,
-                    parent_email=?,parent_phone=?,parent_whatsapp=?,address=? WHERE id=?""",
+    q(conn,"""UPDATE students SET full_name=%s,class_id=%s,gender=%s,parent_name=%s,
+                    parent_email=%s,parent_phone=%s,parent_whatsapp=%s,address=%s WHERE id=%s""",
                  (d['full_name'], d.get('class_id'), d.get('gender',''),
                   d.get('parent_name',''), d.get('parent_email',''),
                   d.get('parent_phone',''), d.get('parent_whatsapp',''),
@@ -736,7 +737,7 @@ def admin_update_student(sid):
 @admin_required
 def admin_delete_student(sid):
     conn = get_db()
-    conn.execute("UPDATE students SET active=0 WHERE id=?",(sid,))
+    q(conn,"UPDATE students SET active=0 WHERE id=%s",(sid,))
     conn.commit(); conn.close()
     return jsonify({'ok':True})
 
@@ -762,7 +763,7 @@ def admin_assign():
     d = request.json or {}
     try:
         conn = get_db()
-        q(conn,"INSERT OR REPLACE INTO teacher_subjects(teacher_id,subject_id,class_id) VALUES(?,?,?)",
+        q(conn,"INSERT INTO teacher_subjects(teacher_id,subject_id,class_id) VALUES(?,?,?) ON CONFLICT(teacher_id,subject_id,class_id) DO NOTHING",
           (d['teacher_id'], d['subject_id'], d['class_id']))
         conn.commit(); conn.close()
         return jsonify({'ok':True})
@@ -774,7 +775,7 @@ def admin_assign():
 @admin_required
 def admin_delete_assignment(aid):
     conn = get_db()
-    conn.execute("DELETE FROM teacher_subjects WHERE id=?",(aid,))
+    q(conn,"DELETE FROM teacher_subjects WHERE id=%s",(aid,))
     conn.commit(); conn.close()
     return jsonify({'ok':True})
 
@@ -1168,9 +1169,12 @@ def teacher_save_attendance():
     saved = 0
     for rec in d.get('records',[]):
         try:
-            q(conn,"""INSERT OR REPLACE INTO attendance
+            q(conn,"""INSERT INTO attendance
                       (student_id,class_id,teacher_id,date,status,note)
-                      VALUES(?,?,?,?,?,?)""",
+                      VALUES(?,?,?,?,?,?)
+                      ON CONFLICT(student_id,date) DO UPDATE SET
+                      class_id=EXCLUDED.class_id, teacher_id=EXCLUDED.teacher_id,
+                      status=EXCLUDED.status, note=EXCLUDED.note""",
               (rec['student_id'], d['class_id'], tid,
                d.get('date', datetime.now().strftime('%Y-%m-%d')),
                rec['status'], rec.get('note','')))
@@ -1217,10 +1221,15 @@ def teacher_save_grades():
     saved = 0
     for g in d.get('grades',[]):
         try:
-            q(conn,"""INSERT OR REPLACE INTO grades
+            q(conn,"""INSERT INTO grades
                       (student_id,subject_id,teacher_id,class_id,score,max_score,
                        method,term,academic_year,comment)
-                      VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                      VALUES(?,?,?,?,?,?,?,?,?,?)
+                      ON CONFLICT(student_id,subject_id,term,academic_year) DO UPDATE SET
+                      teacher_id=EXCLUDED.teacher_id, class_id=EXCLUDED.class_id,
+                      score=EXCLUDED.score, max_score=EXCLUDED.max_score,
+                      method=EXCLUDED.method, comment=EXCLUDED.comment,
+                      entered_at=CURRENT_TIMESTAMP""",
               (g['student_id'], g['subject_id'], tid, g['class_id'],
                g['score'], g.get('max_score',100),
                g.get('method','manual'), g.get('term','End of Term 1'),
@@ -1409,8 +1418,8 @@ def admin_fees_bulk():
     created = 0
     for s in students:
         try:
-            q(conn,"""INSERT OR IGNORE INTO fees(student_id,academic_year,term,amount_due,due_date,status)
-                      VALUES(?,?,?,?,?,'unpaid')""",(s['id'],year,term,amount,due_date))
+            q(conn,"""INSERT INTO fees(student_id,academic_year,term,amount_due,due_date,status)
+                      VALUES(?,?,?,?,?,'unpaid') ON CONFLICT DO NOTHING""",(s['id'],year,term,amount,due_date))
             created += 1
         except: pass
     conn.commit(); conn.close()
@@ -1521,14 +1530,14 @@ def teacher_add_homework():
     tid = session['user_id']
     conn = get_db()
     cur = q(conn,"""INSERT INTO homework(teacher_id,class_id,subject_id,title,description,due_date,max_marks)
-                    VALUES(?,?,?,?,?,?,?)""",
+                    VALUES(?,?,?,?,?,?,?) RETURNING id""",
             (tid,d['class_id'],d['subject_id'],d['title'],d.get('description',''),
              d.get('due_date',''),d.get('max_marks',0)))
-    hw_id = cur.lastrowid
+    hw_id = cur.fetchone()['id']
     # Auto-create submission slots for all students in the class
     students = q(conn,"SELECT id FROM students WHERE class_id=? AND active=1",(d['class_id'],)).fetchall()
     for s in students:
-        q(conn,"INSERT OR IGNORE INTO homework_submissions(homework_id,student_id,status) VALUES(?,?,'pending')",
+        q(conn,"INSERT INTO homework_submissions(homework_id,student_id,status) VALUES(?,?,'pending') ON CONFLICT(homework_id,student_id) DO NOTHING",
           (hw_id, s['id']))
     conn.commit(); conn.close()
     return jsonify({'ok':True,'id':hw_id})
@@ -1637,7 +1646,7 @@ def admin_save_settings():
     d = request.json or {}
     conn = get_db()
     for key,val in d.items():
-        q(conn,"INSERT OR REPLACE INTO school_settings(key,value) VALUES(?,?)",(key,str(val)))
+        q(conn,"INSERT INTO school_settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value",(key,str(val)))
     conn.commit(); conn.close()
     return jsonify({'ok':True})
 
@@ -1719,9 +1728,12 @@ def save_timetable_slot():
     d = request.json or {}
     conn = get_db()
     try:
-        q(conn, """INSERT OR REPLACE INTO timetable
+        q(conn, """INSERT INTO timetable
                    (class_id,subject_id,teacher_id,day_of_week,period,start_time,end_time,room,academic_year)
-                   VALUES(?,?,?,?,?,?,?,?,?)""",
+                   VALUES(?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(class_id,day_of_week,period,academic_year) DO UPDATE SET
+                   subject_id=EXCLUDED.subject_id, teacher_id=EXCLUDED.teacher_id,
+                   start_time=EXCLUDED.start_time, end_time=EXCLUDED.end_time, room=EXCLUDED.room""",
           (d['class_id'], d['subject_id'], d.get('teacher_id') or None,
            d['day_of_week'], d['period'], d['start_time'], d['end_time'],
            d.get('room',''), d.get('academic_year','2025')))
