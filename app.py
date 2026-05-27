@@ -352,26 +352,45 @@ def grade_letter(score, max_s=100):
     return             'F', 'Fail',             '#dc2626'
 
 def send_email(to, subject, body_html, attachments=None):
-    if not EMAIL_USER:
-        return False, "Email not configured (set EMAIL_USER env var)"
+    """Send email using Brevo API (bypasses SMTP block)"""
+    api_key = os.environ.get('BREVO_API_KEY')
+    if not api_key:
+        return False, "Brevo API key not configured. Set BREVO_API_KEY environment variable."
+    
     try:
-        msg = MIMEMultipart('alternative')
-        msg['From'] = f"{SCHOOL_NAME} <{EMAIL_USER}>"
-        msg['To'] = to
-        msg['Subject'] = subject
-        msg.attach(MIMEText(body_html, 'html'))
+        import brevo_python
+        from brevo_python.rest import ApiException
+        
+        configuration = brevo_python.Configuration()
+        configuration.api_key['api-key'] = api_key
+        api_instance = brevo_python.TransactionalEmailsApi(brevo_python.ApiClient(configuration))
+        
+        # Extract recipient email from the 'to' parameter
+        recipient_email = to
+        
+        # Prepare email
+        send_smtp_email = brevo_python.SendSmtpEmail(
+            to=[{'email': recipient_email}],
+            sender={'email': os.environ.get('EMAIL_USER', recipient_email), 'name': SCHOOL_NAME},
+            subject=subject,
+            html_content=body_html
+        )
+        
+        # Add attachment if provided
         if attachments:
+            import base64
             for name, data in attachments:
-                p = MIMEBase('application','octet-stream')
-                p.set_payload(data)
-                encoders.encode_base64(p)
-                p.add_header('Content-Disposition', f'attachment; filename="{name}"')
-                msg.attach(p)
-        with smtplib.SMTP(EMAIL_HOST, EMAIL_PORT, timeout=15) as s:
-            s.ehlo(); s.starttls(); s.login(EMAIL_USER, EMAIL_PASS)
-            s.send_message(msg)
-        return True, "Sent"
+                pdf_content = base64.b64encode(data).decode()
+                if not hasattr(send_smtp_email, 'attachment'):
+                    send_smtp_email.attachment = []
+                send_smtp_email.attachment.append({'content': pdf_content, 'name': name})
+        
+        api_response = api_instance.send_transac_email(send_smtp_email)
+        print(f"Email sent via Brevo: {api_response.get('messageId')}")
+        return True, f"Sent via Brevo (ID: {api_response.get('messageId')})"
+        
     except Exception as e:
+        print(f"Brevo error: {e}")
         return False, str(e)
 
 def send_whatsapp(to, body):
