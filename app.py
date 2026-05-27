@@ -30,6 +30,8 @@ from psycopg2.extras import RealDictCursor
 # ── Database configuration (PostgreSQL only) ─────────────────────────────────
 DATABASE_URL = os.environ.get('DATABASE_URL', '')
 
+USE_POSTGRES = DATABASE_URL and DATABASE_URL.startswith('postgres')
+
 def get_db():
     conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
     conn.autocommit = False
