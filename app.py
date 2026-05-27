@@ -24,7 +24,22 @@ from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
 from email import encoders
 from functools import wraps
+import os
+import psycopg2
+from psycopg2.extras import RealDictCursor
 
+# Database configuration
+DATABASE_URL = os.environ.get('DATABASE_URL', '')
+USE_POSTGRES = DATABASE_URL and DATABASE_URL.startswith('postgres')
+
+def get_db():
+    if USE_POSTGRES:
+        conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+        return conn
+    else:
+        conn = sqlite3.connect('sms.db')
+        conn.row_factory = sqlite3.Row
+        return conn
 # ── Optional heavy dependencies ───────────────────────────────────────────────
 try:
     from weasyprint import HTML as WeasyHTML; HAS_PDF = True
@@ -60,12 +75,17 @@ TWILIO_FROM = os.environ.get('TWILIO_FROM_WHATSAPP', 'whatsapp:+14155238886')
 DB = 'sms.db'
 
 def get_db():
-    c = sqlite3.connect(DB)
-    c.row_factory = sqlite3.Row
-    c.execute("PRAGMA foreign_keys = ON")
-    return c
+    if USE_POSTGRES:
+        return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+    else:
+        c = sqlite3.connect(DB)
+        c.row_factory = sqlite3.Row
+        c.execute("PRAGMA foreign_keys = ON")
+        return c
 
 def q(conn, sql, params=()):
+    if USE_POSTGRES:
+        sql = sql.replace('?', '%s')
     return conn.execute(sql, params)
 
 def init_db():
@@ -256,20 +276,27 @@ def init_db():
 
     # Seed admin
     pwd = bcrypt.hashpw('Admin@2025'.encode(), bcrypt.gensalt())
-    c.execute("""INSERT OR IGNORE INTO users
-                 (username,password,full_name,email,role,approved,avatar_color)
-                 VALUES(?,?,?,?,?,?,?)""",
-              ('admin@school.mw', pwd, 'System Administrator',
-               'admin@school.mw', 'admin', 1, '#4f46e5'))
+    if USE_POSTGRES:
+        c.execute("SELECT * FROM users WHERE username = 'admin@school.mw'")
+        if not c.fetchone():
+            c.execute("INSERT INTO users (username, password, full_name, email, role, approved, avatar_color) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                      ('admin@school.mw', pwd.decode(), 'System Administrator', 'admin@school.mw', 'admin', 1, '#4f46e5'))
+    else:
+        c.execute("INSERT OR IGNORE INTO users (username, password, full_name, email, role, approved, avatar_color) VALUES (?,?,?,?,?,?,?)",
+                  ('admin@school.mw', pwd, 'System Administrator', 'admin@school.mw', 'admin', 1, '#4f46e5'))
 
-    # Seed subjects (Malawi primary curriculum)
+    # Seed subjects
     for name, code, mx in [
         ('Mathematics','MATH',100),('English Language','ENG',100),
         ('Chichewa','CHICH',100),('Integrated Science','SCI',100),
         ('Social Studies','SOC',100),('Religious Education','RE',100),
         ('Expressive Arts','ARTS',100),('Life Skills','LIFE',100)]:
-        c.execute("INSERT OR IGNORE INTO subjects(name,code,max_marks) VALUES(?,?,?)",
-                  (name, code, mx))
+        if USE_POSTGRES:
+            c.execute("SELECT * FROM subjects WHERE name = %s", (name,))
+            if not c.fetchone():
+                c.execute("INSERT INTO subjects(name, code, max_marks) VALUES (%s, %s, %s)", (name, code, mx))
+        else:
+            c.execute("INSERT OR IGNORE INTO subjects(name,code,max_marks) VALUES(?,?,?)", (name, code, mx))
 
     # Seed classes
     for name, gl, st in [
@@ -277,11 +304,16 @@ def init_db():
         ('Standard 2 A',2,'A'),('Standard 3 A',3,'A'),
         ('Standard 4 A',4,'A'),('Standard 5 A',5,'A'),
         ('Standard 6 A',6,'A'),('Standard 7 A',7,'A'),('Standard 8 A',8,'A')]:
-        c.execute("INSERT OR IGNORE INTO classes(name,grade_level,stream) VALUES(?,?,?)",
-                  (name, gl, st))
+        if USE_POSTGRES:
+            c.execute("SELECT * FROM classes WHERE name = %s", (name,))
+            if not c.fetchone():
+                c.execute("INSERT INTO classes(name, grade_level, stream) VALUES (%s, %s, %s)", (name, gl, st))
+        else:
+            c.execute("INSERT OR IGNORE INTO classes(name,grade_level,stream) VALUES(?,?,?)", (name, gl, st))
 
-    conn.commit(); conn.close()
-    print(f"✅ Database initialised → {DB}")
+    conn.commit()
+    conn.close()
+    print(f"✅ Database initialised ({'PostgreSQL' if USE_POSTGRES else 'SQLite'})")
 
 init_db()
 
