@@ -541,14 +541,27 @@ def api_register():
         return jsonify({'ok':False,'msg':'Name, email and password are required'}), 400
     try:
         conn = get_db()
-        pwd = bcrypt.hashpw(d['password'].encode(), bcrypt.gensalt())
-        q(conn, """INSERT INTO users(username,password,full_name,email,phone,whatsapp,
-                   role,approved,subjects_note) VALUES(?,?,?,?,?,?,'teacher',0,?)""",
-          (d['email'], pwd, d['full_name'], d['email'],
-           d.get('phone',''), d.get('whatsapp',''), d.get('subjects_note','')))
-        conn.commit(); conn.close()
+        # Hash the password and store as string
+        pwd = bcrypt.hashpw(d['password'].encode('utf-8'), bcrypt.gensalt())
+        pwd_str = pwd.decode('utf-8')
+        
+        if USE_POSTGRES:
+            cur = conn.cursor()
+            cur.execute("""
+                INSERT INTO users (username, password, full_name, email, phone, whatsapp, role, approved, subjects_note)
+                VALUES (%s, %s, %s, %s, %s, %s, 'teacher', 0, %s)
+            """, (d['email'], pwd_str, d['full_name'], d['email'],
+                  d.get('phone',''), d.get('whatsapp',''), d.get('subjects_note','')))
+        else:
+            q(conn, """INSERT INTO users(username,password,full_name,email,phone,whatsapp,
+                       role,approved,subjects_note) VALUES(?,?,?,?,?,?,'teacher',0,?)""",
+              (d['email'], pwd_str, d['full_name'], d['email'],
+               d.get('phone',''), d.get('whatsapp',''), d.get('subjects_note','')))
+        conn.commit()
+        conn.close()
         return jsonify({'ok':True,'msg':'Registration submitted. Await admin approval.'})
     except Exception as e:
+        print(f"Registration error: {e}")
         return jsonify({'ok':False,'msg':'Email already registered' if 'UNIQUE' in str(e) else str(e)}), 409
 
 @app.route('/api/change-password', methods=['POST'])
