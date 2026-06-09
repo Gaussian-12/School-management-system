@@ -352,45 +352,48 @@ def grade_letter(score, max_s=100):
     return             'F', 'Fail',             '#dc2626'
 
 def send_email(to, subject, body_html, attachments=None):
-    """Send email using Brevo API (bypasses SMTP block)"""
+    """Send email using Brevo API"""
     api_key = os.environ.get('BREVO_API_KEY')
     if not api_key:
-        return False, "Brevo API key not configured. Set BREVO_API_KEY environment variable."
+        print("Brevo API key not configured")
+        return False, "Brevo API key not configured"
     
     try:
-        import brevo_python
-        from brevo_python.rest import ApiException
+        import sib_api_v3_sdk
+        from sib_api_v3_sdk.rest import ApiException
+        import base64
         
-        configuration = brevo_python.Configuration()
+        configuration = sib_api_v3_sdk.Configuration()
         configuration.api_key['api-key'] = api_key
-        api_instance = brevo_python.TransactionalEmailsApi(brevo_python.ApiClient(configuration))
+        api_instance = sib_api_v3_sdk.TransactionalEmailsApi(sib_api_v3_sdk.ApiClient(configuration))
         
-        # Extract recipient email from the 'to' parameter
-        recipient_email = to
-        
-        # Prepare email
-        send_smtp_email = brevo_python.SendSmtpEmail(
-            to=[{'email': recipient_email}],
-            sender={'email': os.environ.get('EMAIL_USER', recipient_email), 'name': SCHOOL_NAME},
-            subject=subject,
-            html_content=body_html
-        )
+        # Prepare email data
+        email_data = {
+            'to': [{'email': to}],
+            'sender': {'email': os.environ.get('EMAIL_USER', 'reports@school.com'), 'name': SCHOOL_NAME},
+            'subject': subject,
+            'html_content': body_html
+        }
         
         # Add attachment if provided
         if attachments:
-            import base64
+            attachment_list = []
             for name, data in attachments:
-                pdf_content = base64.b64encode(data).decode()
-                if not hasattr(send_smtp_email, 'attachment'):
-                    send_smtp_email.attachment = []
-                send_smtp_email.attachment.append({'content': pdf_content, 'name': name})
+                attachment_list.append({
+                    'content': base64.b64encode(data).decode(),
+                    'name': name
+                })
+            email_data['attachment'] = attachment_list
         
+        # Create and send email
+        send_smtp_email = sib_api_v3_sdk.SendSmtpEmail(**email_data)
         api_response = api_instance.send_transac_email(send_smtp_email)
-        print(f"Email sent via Brevo: {api_response.get('messageId')}")
-        return True, f"Sent via Brevo (ID: {api_response.get('messageId')})"
+        
+        print(f"✅ Email sent to {to}")
+        return True, f"Sent via Brevo"
         
     except Exception as e:
-        print(f"Brevo error: {e}")
+        print(f"Email error: {e}")
         return False, str(e)
 
 def send_whatsapp(to, body):
@@ -1010,7 +1013,7 @@ def admin_generate_reports():
 @app.route('/api/admin/reports/resend', methods=['POST'])
 @login_required
 @admin_required
-def admin_resend_report():
+def admin_resend_report(): 
     """Resend report for a single student."""
     d = request.json or {}
     sid         = d.get('student_id')
